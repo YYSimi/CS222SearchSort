@@ -48,6 +48,7 @@ __global__ void GPUMerge(float *d_list, int len, int stepSize,
 
     //Declare counters requierd for recursive mergesort
     int l_start, r_start; //Start index of the two lists being merged
+    int old_l_start;
     int l_end, r_end; //End index of the two lists being merged
     int headLoc; //current location of the write head on the newList
     short curList = 0; /* Will be used to determine which of two lists is the
@@ -74,56 +75,64 @@ __global__ void GPUMerge(float *d_list, int len, int stepSize,
         //Set up start and end indices.
         my_start = eltsPerThread*threadIdx.x;
         my_end = my_start + eltsPerThread;
+        l_start = my_start;
 
+        while (l_start < my_end) { 
+            old_l_start = l_start; //l_start will be getting incremented soon.
+            //If this happens, we are done.
+            if (l_start > my_end){
+                l_start = len;
+                break;
+            }
+            
+            l_end = l_start + walkLen;
+            if (l_end > my_end) {
+                l_end = len;
+            }
+            
+            r_start = l_end;
+            if (r_start > my_end) {
+                r_end = len;
+            }
+            
+            r_end = r_start + walkLen;
+            if (r_end > my_end) {
+                r_end = len;
+            }
+            
+            for (int i = 0; i < walkLen; i++){
+                if (subList[curList][l_start] < subList[curList][r_start]) {
+                    subList[!curList][headLoc] = subList[curList][l_start];
+                    l_start++;
+                    headLoc++;
+                    //Check if l is now empty
+                    if (l_start == l_end) {
+                        for (int j = r_start; j < r_end; j++){
+                            subList[!curList][headLoc] = 
+                                subList[curList][r_start];
+                            r_start++;
+                            headLoc++;
+                    }
+                    } 
+                }
+                else {
+                    subList[!curList][headLoc] = subList[curList][r_start];
+                    r_start++;
+                    //Check if r is now empty
+                    if (r_start == r_end) {
+                        for (int j = l_start; j < l_end; j++){
+                            subList[!curList][headLoc] = 
+                                subList[curList][r_start];
+                            r_start++;
+                            headLoc++;
+                        }
+                    } 
+                }
+            }
 
-        //If this happens, we are done.
-        if (l_start > my_end){
-            l_start = len;
-            break;
+            l_start = old_l_start + 2*walkLen;
+            curList = !curList;
         }
-        
-        l_end = l_start + walkLen;
-        if (l_end > my_end) {
-            l_end = len;
-        }
-        
-        r_start = l_end;
-        if (r_start > my_end) {
-            r_end = len;
-        }
-        
-        r_end = r_start + walkLen;
-        if (r_end > my_end) {
-            r_end = len;
-        }
-        
-        for (int i = 0; i < walkLen; i++){
-            if (subList[curList][l_start] < subList[curList][r_start]) {
-                subList[!curList][headLoc] = subList[curList][l_start];
-                l_start++;
-                headLoc++;
-                //Check if l is now empty
-                if (l_start == l_end) {
-                    for (int j = r_start; j < r_end; j++){
-                        subList[!curList][headLoc] = subList[curList][r_start];
-                        r_start++;
-                        headLoc++;
-                    }
-                } 
-            }
-            else {
-                subList[!curList][headLoc] = subList[curList][r_start];
-                r_start++;
-                //Check if r is now empty
-                if (r_start == r_end) {
-                    for (int j = l_start; j < l_end; j++){
-                        subList[!curList][headLoc] = subList[curList][r_start];
-                        r_start++;
-                        headLoc++;
-                    }
-                } 
-            }
-        }    
     }
     
     return;
