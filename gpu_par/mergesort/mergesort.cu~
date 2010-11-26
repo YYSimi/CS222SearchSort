@@ -1,6 +1,6 @@
 #include <math.h>
 #include <stdio.h>
-#include "../common/cuPrintf.cu"
+#include <cuPrintf.cu>
 
 #define SHAREDSIZE 8000  /* Should be changed to dynamically detect shared
                              memory size if at all possible.  */
@@ -76,8 +76,6 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
     cuPrintf("Considering copying memory\n");
 
     //Load memory
-
-    //Global coordinates of start and end of lists
     g_my_start = blockIdx.x*blockDim.x*eltsPerBlock+threadIdx.x*eltsPerThread;
     g_my_end=blockIdx.x*blockDim.x*eltsPerBlock+(threadIdx.x+1)*eltsPerThread;
     
@@ -105,121 +103,79 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
 
     //Wait until all memory has been loaded
     __syncthreads();
-
-    for (int tStride = eltsPerThread; tStride <= 2*eltsPerBlock; tStride *= 2){
-
-        cuPrintf("   tStride:  %d.\n", tStride);
-
-        if (tStride*threadIdx.x > eltsPerBlock){
-            continue;
-        }
+    
+    //Merge the left and right lists.
+    for (int walkLen = 1; walkLen <= len; walkLen *= 2) { 
         
-        my_start = tStride*threadIdx.x;
-        my_end = my_start + tStride;
-        if (my_end > eltsPerBlock){
-            my_end = eltsPerBlock;
-        }
+        cuPrintf("Walklen is now %d\n", walkLen);
 
-        cuPrintf("   my_start:  %d.  my_end: %d.\n", my_start, my_end);
+        //Set up start and end indices.
+        l_start = my_start;
 
-        //Merge the left and right lists.  Walklen is the current length
-        //of the left sublist.
-        for (int walkLen = 1; walkLen <= tStride; walkLen *= 2) { 
+        while (l_start < my_end) { 
+            old_l_start = l_start; /*l_start will be getting incremented soon,
+                                    *and we want to track where it began */
             
-            cuPrintf("Walklen is now %d\n", walkLen);
+            //If we reach the end of the list, we are done.
+            if (l_start > my_end) {
+                l_start = my_end;
+                break;
+            }
             
-            //Set up start and end indices.
-            l_start = my_start;
-            headLoc = l_start; //Write head starts here.
+            l_end = l_start + walkLen;
+            if (l_end > my_end) {
+                l_end = my_end;
+            }
             
-            while (l_start < my_end) {
-                cuPrintf("curList is now %d\n", curList); 
-                old_l_start = l_start; /*l_start will be incremented soon,
-                                        *and we want to track where it began */
-                cuPrintf("l_start is now %d\n", l_start);
-                
-                //If we reach the end of the list, we are done.
-                if (l_start > my_end) {
-                    l_start = my_end;
-                }
-                
-                l_end = l_start + walkLen;
-                if (l_end > my_end) {
-                    l_end = my_end;
-                    cuPrintf("l_end = my_end (%d)\n", l_end); 
-                }
-                
-                r_start = l_end;
-                cuPrintf("r_start = %d \n", r_start); 
-                if (r_start > my_end) {
-                    r_start = my_end;
-                    cuPrintf("r_start = my_end (%d)\n", r_start); 
-                }
-                
-                r_end = r_start + walkLen;
-                if (r_end > my_end) {
-                    r_end = my_end;
-                    cuPrintf("r_end = my_end (%d)\n", r_end); 
-                }
-                
-                //Perform the merge process
-                while ((l_start < l_end) || (r_start < r_end)) {
-                    cuPrintf("(l_start, end): (%d, %d),(r_start, end): (%d, %d)\n",
-                             l_start, l_end, r_start, r_end);
-                    
-                    //Check if l is now empty
+            r_start = l_end;
+            if (r_start > my_end) {
+                r_end = my_end;
+            }
+            
+            r_end = r_start + walkLen;
+            if (r_end > my_end) {
+                r_end = my_end;
+            }
+            
+            for (int i = 0; i < 2*walkLen; i++){
+                if (subList[curList][l_start] < subList[curList][r_start]) {
+                    subList[!curList][headLoc] = subList[curList][l_start];
+                    l_start++;
+                    headLoc++;
+                  //Check if l is now empty
                     if (l_start == l_end) {
                         for (int j = r_start; j < r_end; j++){
-                            subList[!curList][headLoc] = subList[curList][r_start];
-                            cuPrintf("Writing %f from curlist[%d] to !curlist[%d] at %d\n",                            
-                                     subList[curList][r_start], r_start,
-                                     headLoc, __LINE__);
+                            subList[!curList][headLoc] = 
+                                subList[curList][r_start];
+                            r_start++;
+                            headLoc++;
+                        }
+                        break;
+                    } 
+                }
+                else {
+                    subList[!curList][headLoc] = subList[curList][r_start];
+                    r_start++;
+                    //Check if r is now empty
+                    if (r_start == r_end) {
+                        for (int j = l_start; j < l_end; j++){
+                            subList[!curList][headLoc] = 
+                                subList[curList][r_start];
                             r_start++;
                             headLoc++;
                         }
                         break;
                     }
-                    
-                    //Check if r is empty
-                    if (r_start == r_end) {
-                        for (int j = l_start; j < l_end; j++){
-                            subList[!curList][headLoc] = subList[curList][l_start];
-                            cuPrintf("Writing %f from curlist[%d] to !curlist[%d] at %d\n",                                     
-                                     subList[curList][l_start], l_start,
-                                     headLoc, __LINE__);
-                            l_start++;
-                            headLoc++;
-                        }
-                        break;
-                    }
-                    
-                    //Is left lead smaller than right lead?
-                    if (subList[curList][l_start] < subList[curList][r_start]) {
-                        subList[!curList][headLoc] = subList[curList][l_start];
-                        cuPrintf("Writing %f from curlist[%d] to !curlist[%d] at %d\n",
-                                 subList[curList][l_start], l_start, 
-                                 headLoc, __LINE__);
-                        l_start++;
-                        headLoc++; 
-                    }
-                    
-                    //Is right lead smaller than left lead?
-                    else {
-                        subList[!curList][headLoc] = subList[curList][r_start];
-                        cuPrintf("Writing %f from curlist[%d] to !curlist[%d] at %d\n",
-                                 subList[curList][r_start], r_start,
-                                 headLoc, __LINE__);
-                        r_start++;
-                        headLoc++;
-                    }
                 }
-                
-                l_start = old_l_start + 2*walkLen;
             }
-            curList = !curList;
+
+            l_start = old_l_start + 2*walkLen;
         }
-        __syncthreads();
+        curList = !curList;
+        cuPrintf("curList is now %d\n", curList);
     }
+
+    __syncthreads();
 
     for (int i = 0; i < eltsPerThread; i++){
         if (index + i < len){
@@ -261,9 +217,6 @@ int main(int argc, char *argv[]){
         return -1;
     }
     
-    cudaDeviceProp devProp;
-    cudaGetDeviceProperties(&devProp, 0);
-
     FILE *fin = fopen(argv[1], "r");
     
     if (fin == NULL){
@@ -282,7 +235,7 @@ int main(int argc, char *argv[]){
     for (int i = 0; i < len; i++){
         if (EOF == fscanf(fin, "%f ", &h_list[i])){
             break;
-        }
+        };
     }
 
     printf("\nInitial list is:\n");
@@ -290,9 +243,7 @@ int main(int argc, char *argv[]){
         printf("%f\n", h_list[i]);
     }
 
-    //MergeSort(h_list, len, devProp.maxThreadsDim[0], devProp.maxGridSize[0]);
-    //MergeSort(h_list, len, devProp.maxThreadsDim[0], 1);
-    MergeSort(h_list, len, 192, 2);
+    MergeSort(h_list, len, 2, 1);
 
     cudaThreadSynchronize();
     cudaPrintfDisplay(stdout, true);

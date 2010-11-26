@@ -1,0 +1,112 @@
+
+Initial list is:
+23.000000
+1.000000
+1.300000
+1.200000
+3.000000
+22.139999
+3.140000
+Len is 7, tpb*blocks is 2
+eltsPerBlock is 7
+eltsPerThread is 4
+
+[0, 0]: Considering copying memory
+[0, 0]: Index:  0, eltsPerThread:  4
+[0, 0]: Copied memory at 0.  Value is 23.000000.  Should be 23.000000
+[0, 0]: Copied memory at 1.  Value is 1.000000.  Should be 1.000000
+[0, 0]: Copied memory at 2.  Value is 1.300000.  Should be 1.300000
+[0, 0]: Copied memory at 3.  Value is 1.200000.  Should be 1.200000
+[0, 0]: Walklen is now 1
+[0, 0]: curList is now 0
+[0, 0]: l_start is now 0
+[0, 0]: r_start = 1 
+[0, 0]: (l_start, end): (0, 1),(r_start, end): (1, 2)
+[0, 0]: Writing 1.000000 from curlist[1] to !curlist[0] at 195
+[0, 0]: (l_start, end): (0, 1),(r_start, end): (2, 2)
+[0, 0]: Writing 23.000000 from curlist[0] to !curlist[1] at 173
+[0, 0]: curList is now 0
+[0, 0]: l_start is now 2
+[0, 0]: r_start = 3 
+[0, 0]: (l_start, end): (2, 3),(r_start, end): (3, 4)
+[0, 0]: Writing 1.200000 from curlist[3] to !curlist[2] at 195
+[0, 0]: (l_start, end): (2, 3),(r_start, end): (4, 4)
+[0, 0]: Writing 1.300000 from curlist[2] to !curlist[3] at 173
+[0, 0]: Walklen is now 2
+[0, 0]: curList is now 1
+[0, 0]: l_start is now 0
+[0, 0]: r_start = 2 
+[0, 0]: (l_start, end): (0, 2),(r_start, end): (2, 4)
+[0, 0]: Writing 1.000000 from curlist[0] to !curlist[0] at 185
+[0, 0]: (l_start, end): (1, 2),(r_start, end): (2, 4)
+[0, 0]: Writing 1.200000 from curlist[2] to !curlist[1] at 195
+[0, 0]: (l_start, end): (1, 2),(r_start, end): (3, 4)
+[0, 0]: Writing 1.300000 from curlist[3] to !curlist[2] at 195
+[0, 0]: (l_start, end): (1, 2),(r_start, end): (4, 4)
+[0, 0]: Writing 23.000000 from curlist[1] to !curlist[3] at 173
+[0, 0]: Walklen is now 4
+[0, 0]: curList is now 0
+[0, 0]: l_start is now 0
+[0, 0]: r_start = 4 
+[0, 0]: r_end = my_end (4)
+[0, 0]: (l_start, end): (0, 4),(r_start, end): (4, 4)
+[0, 0]: Writing 1.000000 from curlist[0] to !curlist[0] at 173
+[0, 0]: Writing 1.200000 from curlist[1] to !curlist[1] at 173
+[0, 0]: Writing 1.300000 from curlist[2] to !curlist[2] at 173
+[0, 0]: Writing 23.000000 from curlist[3] to !curlist[3] at 173
+[0, 0]: Writing 1.000000 to d_list at 0
+[0, 0]: Writing 1.200000 to d_list at 1
+[0, 0]: Writing 1.300000 to d_list at 2
+[0, 0]: Writing 23.000000 to d_list at 3
+[0, 1]: Considering copying memory
+[0, 1]: Index:  4, eltsPerThread:  4
+[0, 1]: Copied memory at 4.  Value is 3.000000.  Should be 3.000000
+[0, 1]: Copied memory at 5.  Value is 22.139999.  Should be 22.139999
+[0, 1]: Copied memory at 6.  Value is 3.140000.  Should be 3.140000
+[0, 1]: Walklen is now 1
+[0, 1]: curList is now 0
+[0, 1]: l_start is now 4
+[0, 1]: r_start = 5 
+[0, 1]: (l_start, end): (4, 5),(r_start, end): (5, 6)
+[0, 1]: Writing 3.000000 from curlist[4] to !curlist[4] at 185
+[0, 1]: (l_start, end): (5, 5),(r_start, end): (5, 6)
+[0, 1]: Writing 22.139999 from curlist[5] to !curlist[5] at 160
+[0, 1]: curList is now 0
+[0, 1]: l_start is now 6
+[0, 1]: r_start = 7 
+[0, 1]: r_end = my_end (7)
+[0, 1]: (l_start, end): (6, 7),(r_start, end): (7, 7)
+[0, 1]: Writing 3.140000 from curlist[6] to !curlist[6] at 173
+[0, 1]: Walklen is now 2
+[0, 1]: curList is now 1
+[0, 1]: l_start is now 4
+[0, 1]: r_start = 6 
+[0, 1]: r_end = my_end (7)
+[0, 1]: (l_start, end): (4, 6),(r_start, end): (6, 7)
+[0, 1]: Writing 3.000000 from curlist[4] to !curlist[4] at 185
+[0, 1]: (l_start, end): (5, 6),(r_start, end): (6, 7)
+[0, 1]: Writing 3.140000 from curlist[6] to !curlist[5] at 195
+[0, 1]: (l_start, end): (5, 6),(r_start, end): (7, 7)
+[0, 1]: Writing 22.139999 from curlist[5] to !curlist[6] at 173
+[0, 1]: Walklen is now 4
+[0, 1]: curList is now 0
+[0, 1]: l_start is now 4
+[0, 1]: l_end = my_end (7)
+[0, 1]: r_start = 7 
+[0, 1]: r_end = my_end (7)
+[0, 1]: (l_start, end): (4, 7),(r_start, end): (7, 7)
+[0, 1]: Writing 3.000000 from curlist[4] to !curlist[4] at 173
+[0, 1]: Writing 3.140000 from curlist[5] to !curlist[5] at 173
+[0, 1]: Writing 22.139999 from curlist[6] to !curlist[6] at 173
+[0, 1]: Writing 3.000000 to d_list at 4
+[0, 1]: Writing 3.140000 to d_list at 5
+[0, 1]: Writing 22.139999 to d_list at 6
+
+Final list is:
+1.000000
+1.200000
+1.300000
+23.000000
+3.000000
+3.140000
+22.139999
