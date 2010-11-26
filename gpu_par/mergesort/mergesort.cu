@@ -43,7 +43,7 @@ void MergeSort(float *h_list, int len, int threadsPerBlock, int blocks) {
         eltsPerBlock = maxStep;
     }
 
-    printf("\n");
+    printf("Attempting to call GPUMerge\n\n");
     GPUMerge<<<blocks, threadsPerBlock>>>(d_list, len, eltsPerBlock,
                                           eltsPerThread);
 
@@ -58,11 +58,12 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
                          int eltsPerThread){ //ENSURE EPT IS NOT TOO LARGE!
 
     int my_start, my_end; //indices of each thread's start/end in shared mem
-    int g_my_start, g_my_end; //indices of thread's start/end in global mem
+    int g_my_start, g_my_end; //indices of thread's start/end in global mem    
 
     //Declare counters requierd for recursive mergesort
     int l_start, r_start; //Start index of the two lists being merged
-    int old_l_start;
+    int walkLen; //Length of the left sublist being merged
+    int old_l_start; 
     int l_end, r_end; //End index of the two lists being merged
     int headLoc; //current location of the write head on the newList
     short curList = 0; /* Will be used to determine which of two lists is the
@@ -78,12 +79,12 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
     //Load memory
 
     //Global coordinates of start and end of lists
-    g_my_start = blockIdx.x*blockDim.x*eltsPerBlock+threadIdx.x*eltsPerThread;
-    g_my_end=blockIdx.x*blockDim.x*eltsPerBlock+(threadIdx.x+1)*eltsPerThread;
+    g_my_start = blockIdx.x*eltsPerBlock+threadIdx.x*eltsPerThread;
+    g_my_end=blockIdx.x*eltsPerBlock+(threadIdx.x+1)*eltsPerThread;
     
     //Did we run past the end of the block?
-    if (g_my_end > blockIdx.x*blockDim.x*eltsPerBlock + eltsPerBlock){
-        g_my_end = blockIdx.x*blockDim.x*eltsPerBlock + eltsPerBlock;
+    if (g_my_end > (blockIdx.x+1)*eltsPerBlock){
+        g_my_end = (blockIdx.x+1)*eltsPerBlock;
     }
 
     //Did we run past the end of the list?
@@ -91,12 +92,12 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
         g_my_end = len;
     }
 
-    //Local (shared memory) coordinates of start and end of list
-    my_start = g_my_start - blockIdx.x*blockDim.x*eltsPerBlock;
-    my_end = g_my_end - blockIdx.x*blockDim.x*eltsPerBlock;
+    //Local (shared memory) coordinates of start and end of list in this block
+    my_start = g_my_start - blockIdx.x*eltsPerBlock;
+    my_end = g_my_end - blockIdx.x*eltsPerBlock;
 
-    int index = blockIdx.x*blockDim.x*eltsPerBlock + threadIdx.x*eltsPerThread;
-    cuPrintf("Index:  %d, eltsPerThread:  %d\n", index, eltsPerThread);
+    //Load all memory for this block
+    cuPrintf("g_my_start:  %d, eltsPerThread:  %d\n", g_my_start, eltsPerThread);
     for (int i = g_my_start, j = my_start; i < g_my_end; i++, j++){
         subList[curList][j] = d_list[i];
         cuPrintf("Copied memory at %d.  Value is %f.  Should be %f\n",
@@ -106,25 +107,35 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
     //Wait until all memory has been loaded
     __syncthreads();
 
+    walkLen = 1;
+
+    //tStride is the number of elements that a thread is responsible for.
     for (int tStride = eltsPerThread; tStride <= 2*eltsPerBlock; tStride *= 2){
 
         cuPrintf("   tStride:  %d.\n", tStride);
 
-        if (tStride*threadIdx.x > eltsPerBlock){
-            continue;
-        }
-        
         my_start = tStride*threadIdx.x;
+        if (my_start > eltsPerBlock){
+            break;
+        }
+
         my_end = my_start + tStride;
+
+        //Did we overrun the block?
         if (my_end > eltsPerBlock){
             my_end = eltsPerBlock;
+        }
+
+        //Did we overrun the list?
+        if (my_end + blockIdx.x*eltsPerBlock > len ){
+            my_end = len - blockIdx.x*eltsPerBlock;
         }
 
         cuPrintf("   my_start:  %d.  my_end: %d.\n", my_start, my_end);
 
         //Merge the left and right lists.  Walklen is the current length
         //of the left sublist.
-        for (int walkLen = 1; walkLen <= tStride; walkLen *= 2) { 
+        for ( ; walkLen <= tStride; walkLen *= 2) { 
             
             cuPrintf("Walklen is now %d\n", walkLen);
             
@@ -218,16 +229,22 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
             }
             curList = !curList;
         }
+        walkLen = tStride;
         __syncthreads();
     }
 
-    for (int i = 0; i < eltsPerThread; i++){
-        if (index + i < len){
-            d_list[index + i]=subList[curList][eltsPerThread*threadIdx.x + i];
-            cuPrintf("Writing %f to d_list at %d\n",
-                     subList[curList][eltsPerThread*threadIdx.x + i],
-                     eltsPerThread*threadIdx.x+i);
-        }
+    __syncthreads();
+
+    //Local (shared memory) coordinates of start and end of list to write back
+    my_start = g_my_start - blockIdx.x*eltsPerBlock;
+    my_end = g_my_end - blockIdx.x*eltsPerBlock;
+
+    //Write all memory for this block back to global memory
+    cuPrintf("g_my_start:  %d, eltsPerThread:  %d\n", g_my_start, eltsPerThread);
+    for (int i = g_my_start, j = my_start; i < g_my_end; i++, j++){
+        d_list[i] = subList[curList][j];
+        cuPrintf("Writing %f to d_list at %d.\n",
+                 subList[curList][j], i);
     }
 
     __syncthreads();
@@ -247,6 +264,10 @@ __global__ void GPUMerge(float *d_list, int len, int eltsPerBlock,
     */
 }
 
+void usage(){
+    printf("Usage: in_list [thread_count] [kernel_count]"); 
+}
+
 int main(int argc, char *argv[]){
     
     int len;
@@ -254,15 +275,26 @@ int main(int argc, char *argv[]){
 
     cudaPrintfInit();
 
-    if (argc != 2) {
-        printf("Invalid argument count.  %s requires exactly 1 argument, \
-%d given",
+    if ((argc > 4) || argc < 2) {
+        printf("Invalid argument count.  %s accepts 1-4 arguments, %d given",
                argv[0], argc);
+        usage();
         return -1;
     }
     
     cudaDeviceProp devProp;
     cudaGetDeviceProperties(&devProp, 0);
+
+    int thread_count = devProp.maxThreadsDim[0];
+    //int kernel_count = devProp.maxGridSize[0];
+    int kernel_count = 1;
+
+    if (argc > 2){
+        thread_count = atoi(argv[2]);
+    }
+    if (argc > 3){
+        kernel_count = atoi(argv[3]);
+    }
 
     FILE *fin = fopen(argv[1], "r");
     
@@ -292,7 +324,7 @@ int main(int argc, char *argv[]){
 
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], devProp.maxGridSize[0]);
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], 1);
-    MergeSort(h_list, len, 192, 2);
+    MergeSort(h_list, len, thread_count, kernel_count);
 
     cudaThreadSynchronize();
     cudaPrintfDisplay(stdout, true);
