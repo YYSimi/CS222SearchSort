@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
+#define BLOCKSIZE 1023  //Size of blocks at the bottom heap
+#define OUTSIZE 512 //Size of output shared memory
+#define BLOCKDEPTH 10 //Max Depth of bottom heap, and ceil of log of blocksize
+
 //Tells us our current progress on building a given block.
 typedef struct blockInfo{
     short bufsize;
@@ -19,9 +23,13 @@ __device__ void bottomLevel(float *d_list, int len); //NYI
 __device__ void topLevel(float *d_list, int len); //NYI
 __device__ void heapify(__volatile__ float *in_list, int len, 
                         __volatile__ int *temp);
+__device__ void pipelinedPop(__volatile__ float *heap, float *out_list, 
+                             int d, int popCount,
+                             __volatile__ int *temp);
 __device__ void loadBlock(float *g_block, float *s_block, int blockLen,
                           blockInfo_t *g_info, blockInfo_t *s_info);
-__device__ void writeBlock(float *g_block, float *s_block, int blockLen);
+__device__ void writeBlock(float *g_block, __volatile__ float *s_block,
+                           int blockLen);
 __device__ void printBlock(float *s_block, int blockLen);
 __host__ int heapSort(float *h_list, 
                       int len, int threadsPerBlock,
@@ -40,11 +48,6 @@ int ceilLog2(int x){
         output++;
     }
     return output;
-}
-
-__global__ void superTest(){
-    cuPrintf("supertest!\n");
-    return;
 }
 
 /* Heapsort definition.  Takes a pointer to a list of floats.
@@ -77,22 +80,17 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
         threadsPerBlock = 64;
     }
     if (threadsPerBlock > devProp.maxThreadsPerBlock) {
-        printf("Device cannot handle %d threads per block.\
-max is %d",
+        printf("Device cannot handle %d threads per block.  Max is %d",
                threadsPerBlock, devProp.maxThreadsPerBlock);
         return -1;
     }
      
     //Calculate size of heaps.  BotHeapSize is 1/8 shared mem size.
-    logBotHeapSize = ceilLog2(devProp.sharedMemPerBlock>>3);
+    //logBotHeapSize = ceilLog2(devProp.sharedMemPerBlock>>3);
+    logBotHeapSize = BLOCKDEPTH;
     logMidHeapSize = logBotHeapSize - 2;
 
     printf("logBotHeap: %d, logMidHeap: %d\n", logBotHeapSize, logMidHeapSize);
-
-    if (logBotHeapSize == 0 || logMidHeapSize == 0){
-        printf("Error:  Insufficient GPU shared memory to run heapSort");
-        return -1;
-    }
 
     //Calculate metaDepth and topHeapSize.
     metaDepth = 0; //Will increment this if necessary.
@@ -151,8 +149,9 @@ max is %d",
          devProp.warpSize, metaDepth);
     */
     GPUHeapSort<<<blocks, threadsPerBlock>>>
-        (d_list, blockInfo, len, 0, 1024, devProp.warpSize, metaDepth);
+        (d_list, blockInfo, len, 0, BLOCKSIZE, devProp.warpSize, metaDepth);
 
+    cudaThreadSynchronize();
     cudaMemcpy(h_list, d_list, len*sizeof(float), cudaMemcpyDeviceToHost);
 
     return 0;
@@ -166,37 +165,55 @@ __global__ void GPUHeapSort(float *d_list, blockInfo_t *blockInfo,
                             int botHeapSize,
                             int warpSize, int metaDepth){
     
-    __shared__ __volatile__ float heap[1024];
-    __shared__ float output[512];
+    __shared__ __volatile__ float heap[BLOCKSIZE];
+    __shared__ float output[OUTSIZE];
     __shared__ blockInfo_t curBlockInfo;
     __shared__ int g_start, g_end;
     __shared__ int blockLen;
     __shared__ __volatile__ int temp; //temporay variable for device functions.
 
+    int i = 512;
+    if (i > len) {
+        i = len;
+    }
+
     g_start = blockIdx.x*botHeapSize;
-    g_end = (blockIdx.x+1)*botHeapSize;
-    
+    g_end = (blockIdx.x+1)*botHeapSize;    
+
     if (g_end > len){
         g_end = len;
     }
     
     blockLen = g_end-g_start;
-
     //Load memory
     
     loadBlock(&d_list[g_start], (float *)heap, blockLen,
               &blockInfo[blockIdx.x], &curBlockInfo);
     
     __syncthreads();
+    
+    
     //printBlock((float *) heap, blockLen);
-
+    
     //First warp heapifies
     if (threadIdx.x < 8){
         heapify(heap, blockLen, &temp);
     }
     __syncthreads();
 
-    printBlock((float *) heap, blockLen);
+    //printBlock((float *)heap, i);
+
+    //First warp pops
+    if (threadIdx.x < 8){
+        pipelinedPop(heap, (float *)output, BLOCKDEPTH, i, &temp);
+        //__threadfence_block();
+    }
+
+    __syncthreads();
+    
+    writeBlock(&d_list[g_start], heap, blockLen);
+    
+    printBlock((float *)output, i);
 
     return;
 }
@@ -209,6 +226,7 @@ __device__ void loadBlock(float *g_block, float *s_block, int blockLen,
 
     for(int i = threadIdx.x; i < blockLen; i += blockDim.x){
         s_block[i] = g_block[i];
+        g_block[i] = s_block[i];
     }
     if (threadIdx.x == 0){
         *s_info = *g_info;
@@ -218,10 +236,12 @@ __device__ void loadBlock(float *g_block, float *s_block, int blockLen,
 /* Writes a block of data from shared memory into global memory.  Must be
  * called by all threads of a thread block to ensure proper operation. 
  */
-__device__ void writeBlock(float *g_block, float *s_block, int blockLen){
+__device__ void writeBlock(float *g_block,
+                           __volatile__ float *s_block, int blockLen){
 
     for(int i = threadIdx.x; i < blockLen; i += blockDim.x){
-        g_block[i] = s_block[i];
+        //cuPrintf("Writing %f at location %d\n", s_block[i], i);
+        //g_block[i] = s_block[i];
     }
 }
 
@@ -241,7 +261,7 @@ __device__ void heapify(__volatile__ float *inList, int len,
     
     int focusIdx = 0; //Index of element currently being heapified
     float focus=0, parent=0; //current element being heapified and its parent
-    int localTemp=0; /* Temp doesn't need to be re-read _every_ time.
+    /*int localTemp=0; Temp doesn't need to be re-read _every_ time.
                     * Temp will be used to track the next element to percolate.
                     */
 
@@ -249,7 +269,7 @@ __device__ void heapify(__volatile__ float *inList, int len,
         *temp = 0; //Index of next element to heapify
     }
 
-    localTemp = 0;
+    //localTemp = 0;
     
     //We maintain the invariant that no two threads are processing on
     //adjacent layers of the heap in order to avoid memory conflicts and
@@ -293,8 +313,101 @@ __device__ void heapify(__volatile__ float *inList, int len,
                 focusIdx = 0; 
             }
        }
-        localTemp = *temp;
+        //localTemp = *temp;
     }
+    return;
+}
+
+/* Pops a heap using a single warp.  Must be run on the bottom warp of a
+ * thread.  If this function is not executed by all of threads 0-7, the GPU
+ * will stall.
+ * heap: a pointer to a heap structure w/ space for a complete heap of depth d 
+ * d:  The depth of the heap 
+ * count: The number of elements to pop
+ */
+__device__ void pipelinedPop(__volatile__ float *heap, float *out_list, 
+                             int d, int popCount,
+                             __volatile__ int *temp){
+    
+    int focusIdx = 0; //Index of element currently percolating down
+    int maxChildIdx=0; //Index of largest child of element percolating down
+    int curDepth=d+1; //Depth of element currently percolating down
+    /*int localTemp=0; Temp doesn't need to be re-read _every_ time.
+                    * Temp will be used to track the next element to percolate.
+                    */
+
+    if (threadIdx.x == 0){
+        *temp = 0; //We have thus far popped 0 elements
+    }
+
+    //localTemp = 0;
+    
+    //We maintain the invariant that no two threads are processing on
+    //adjacent layers of the heap in order to avoid memory conflicts and
+    //race conditions.
+    while (*temp < popCount){
+        if (threadIdx.x == (*temp & 7)){
+            focusIdx = 0;
+            curDepth = 0;
+            out_list[*temp] = heap[0];
+            *temp = *temp + 1;
+            //cuPrintf("temp is: %d\n", *temp);
+            //cuPrintf("top of heap is: %f\n", heap[0]);
+        }
+        
+        //Unrolled loop once to avoid race conditions and get a small speed
+        //boost over using a for loop on 2 iterations.
+        if (curDepth < d-1){
+            maxChildIdx = 2*focusIdx+1;
+            //cuPrintf("Children are %f, %f\n", heap[2*focusIdx+2], 
+            //         heap[maxChildIdx]); 
+            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+            //         focusIdx);
+            if (heap[2*focusIdx+2] > heap[maxChildIdx]){
+                maxChildIdx = 2*focusIdx+2;
+            }
+            heap[focusIdx] = heap[maxChildIdx];
+            focusIdx = maxChildIdx;
+            curDepth++;
+        }
+
+        if (curDepth < d-1){
+            maxChildIdx = 2*focusIdx+1;
+            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+            //         focusIdx);
+            if (heap[2*focusIdx+2] > heap[maxChildIdx]){
+                maxChildIdx = 2*focusIdx+2;
+            }
+            heap[focusIdx] = heap[maxChildIdx];
+            focusIdx = maxChildIdx;
+            curDepth++;
+        }
+
+        if (curDepth == d-1){
+            //cuPrintf("curDepth is %d\n", curDepth);
+            //cuPrintf("focusIdx is %d\n", focusIdx);
+            //cuPrintf("Depth is %d (max).  Focusing on element %d\n", curDepth,
+            //focusIdx);
+            heap[focusIdx] = 0;
+            curDepth++;
+            //continue;
+        }
+    }
+    
+    //empty the pipeline before returning
+    
+    while (curDepth < d-1){
+        //cuPrintf("Emptying Pipeline.  Focusing on element %d\n", focusIdx); 
+        maxChildIdx = 2*focusIdx+1;
+        if (heap[2*focusIdx+2] > heap[maxChildIdx]){
+            maxChildIdx = 2*focusIdx+2;
+        }
+        heap[focusIdx] = heap[maxChildIdx];
+        focusIdx = maxChildIdx;
+        curDepth++;
+    }
+    
+
     return;
 }
 
@@ -351,12 +464,12 @@ int main(int argc, char *argv[]){
         }
     }
 
-    /*
+    
     printf("\nInitial list is:\n");
     for (int i = 0; i < len; i++){
         printf("%f\n", h_list[i]);
     }
-    */
+    
 
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], devProp.maxGridSize[0]);
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], 1);
@@ -366,12 +479,12 @@ int main(int argc, char *argv[]){
     cudaPrintfDisplay(stdout, true);
     cudaPrintfEnd();
 
-    /*
+    
     printf("\nFinal list is:\n");
     for (int i = 0; i < len; i++){
         printf("%f\n", h_list[i]);
     }
-    */
+    
 
     return 0;
 }
