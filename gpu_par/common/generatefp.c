@@ -69,9 +69,9 @@ int main(int argc, char **argv){
     }
     fprintf(disorder, "#%d#", length);
     fprintf(stdout,"Randomly swapping list elements.");
+    srand(time(NULL));
     for(long i = 0; i < length; i++){
-      srand(time(NULL));
-      long k = rand() % (length + 1);
+      long k = rand() % (length);
       float temp = mixed_ar[k];
       mixed_ar[k] = mixed_ar[i];
       mixed_ar[i] = temp;
