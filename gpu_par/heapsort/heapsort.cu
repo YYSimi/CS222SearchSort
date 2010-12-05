@@ -2,23 +2,31 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
-//Forward declarations
-__global__ void GPUHeapSort(float *d_list, int len, int topHeapSize,
-                            int botHeapSize, int eltsPerThread,
-                            int warpSize, int metaDepth);
-__device__ void bottomLevel(float *d_list, int len); //NYI
-__device__ void topLevel(float *d_list, int len); //NYI
-__device__ void heapify(float *in_list, int len);
-__device__ void loadBlock(float *block, int blockLen);
-__host__ int heapSort(float *h_list, int len, int threadsPerBlock,
-                      int blocks, cudaDeviceProp devProp);
-__host__ int floorlog2(int x);
-
+//Tells us our current progress on building a given block.
 typedef struct blockInfo{
     short bufsize;
     short writeloc;
     int heapified; //Only a bool is needed, but int will maintain alignment.
 } blockInfo_t;
+
+
+//Forward declarations
+__global__ void GPUHeapSort(float *d_list, blockInfo_t *blockInfo,
+                            int len, int topHeapSize,
+                            int botHeapSize, 
+                            int warpSize, int metaDepth);
+__device__ void bottomLevel(float *d_list, int len); //NYI
+__device__ void topLevel(float *d_list, int len); //NYI
+__device__ void heapify(__volatile__ float *in_list, int len, 
+                        __volatile__ int *temp);
+__device__ void loadBlock(float *g_block, float *s_block, int blockLen,
+                          blockInfo_t *g_info, blockInfo_t *s_info);
+__device__ void writeBlock(float *g_block, float *s_block, int blockLen);
+__device__ void printBlock(float *s_block, int blockLen);
+__host__ int heapSort(float *h_list, 
+                      int len, int threadsPerBlock,
+                      int blocks, cudaDeviceProp devProp);
+__host__ int floorlog2(int x);
 
 //Ceiling of log2 of x.  Could be made faster, but effect would be negligible.
 int ceilLog2(int x){
@@ -32,6 +40,11 @@ int ceilLog2(int x){
         output++;
     }
     return output;
+}
+
+__global__ void superTest(){
+    cuPrintf("supertest!\n");
+    return;
 }
 
 /* Heapsort definition.  Takes a pointer to a list of floats.
@@ -48,8 +61,6 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
     int topHeapSize; //Size of the top heap
     int logBotHeapSize; //log_2 of max size of the bottom heaps 
     int logMidHeapSize; //log_2 of max size of intermediate heaps
-    int eltsPerThread; /* Count of elements that a given thread must handle.
-                          on the bottom heap. */
     int temp;
 
     //Trivial list?  Just return.
@@ -82,9 +93,6 @@ max is %d",
         printf("Error:  Insufficient GPU shared memory to run heapSort");
         return -1;
     }
-
-    //Calculate eltsPerThread
-    eltsPerThread = (int)ceil(float(1<<logBotHeapSize)/float(threadsPerBlock));
 
     //Calculate metaDepth and topHeapSize.
     metaDepth = 0; //Will increment this if necessary.
@@ -136,10 +144,14 @@ max is %d",
     }
     
     printf("Attempting to call GPUHeapSort\n\n");
+    /*
     GPUHeapSort<<<blocks, threadsPerBlock,
-        1<<(logBotHeapSize + 3) + 1<<(logBotHeapSize+2) >>>
-        (d_list, len, topHeapSize, 1<<logBotHeapSize, eltsPerThread, 
+        ( 1<<(logBotHeapSize + 3) + 1<<(logBotHeapSize+2) ) >>>
+        (d_list, blockInfo, len, topHeapSize, 1<<logBotHeapSize, 
          devProp.warpSize, metaDepth);
+    */
+    GPUHeapSort<<<blocks, threadsPerBlock>>>
+        (d_list, blockInfo, len, 0, 1024, devProp.warpSize, metaDepth);
 
     cudaMemcpy(h_list, d_list, len*sizeof(float), cudaMemcpyDeviceToHost);
 
@@ -151,59 +163,72 @@ max is %d",
  * Puts the list into sorted order in-place.*/
 __global__ void GPUHeapSort(float *d_list, blockInfo_t *blockInfo,
                             int len, int topHeapSize,
-                            int botHeapSize, int threadsPerBlock,
+                            int botHeapSize,
                             int warpSize, int metaDepth){
-
-    extern __shared__ float array[];
-    float *heap = array;
-    float *output = &array[botHeapSize];
     
-    int my_start, my_end; //indices of each thread's start/end in shared mem
-    int g_my_start, g_my_end; //indices of thread's start/end in global mem    
-    
+    __shared__ __volatile__ float heap[1024];
+    __shared__ float output[512];
+    __shared__ blockInfo_t curBlockInfo;
+    __shared__ int g_start, g_end;
+    __shared__ int blockLen;
+    __shared__ __volatile__ int temp; //temporay variable for device functions.
 
-    cuPrintf("Considering copying memory\n");
+    g_start = blockIdx.x*botHeapSize;
+    g_end = (blockIdx.x+1)*botHeapSize;
+    
+    if (g_end > len){
+        g_end = len;
+    }
+    
+    blockLen = g_end-g_start;
+
     //Load memory
-
-    //Global coordinates of start and end of lists
-    g_my_start = blockIdx.x*eltsPerBlock+threadIdx.x*eltsPerThread;
-    g_my_end=blockIdx.x*eltsPerBlock+(threadIdx.x+1)*eltsPerThread;
     
-    //Did we run past the end of the block?
-    if (g_my_end > (blockIdx.x+1)*eltsPerBlock){
-        g_my_end = (blockIdx.x+1)*eltsPerBlock;
-    }
-
-    //Did we run past the end of the list?
-    if (g_my_end > len){
-        g_my_end = len;
-    }
-    /*
-    //Local (shared memory) coordinates of start and end of list in this block
-    my_start = g_my_start - blockIdx.x*eltsPerBlock;
-    my_end = g_my_end - blockIdx.x*eltsPerBlock;
-
-    //Load all memory for this block
-    cuPrintf("g_my_start:  %d, eltsPerThread:  %d\n", g_my_start, eltsPerThread);
-    for (int i = g_my_start, j = my_start; i < g_my_end; i++, j++){
-        subList[j] = d_list[i];
-        //cuPrintf("Copied memory at %d.  Value is %f.  Should be %f\n",
-        //         i, subList[j], d_list[i]);
-    }
-
-    //Wait until all memory has been loaded
+    loadBlock(&d_list[g_start], (float *)heap, blockLen,
+              &blockInfo[blockIdx.x], &curBlockInfo);
+    
     __syncthreads();
-    */
+    //printBlock((float *) heap, blockLen);
+
+    //First warp heapifies
+    if (threadIdx.x < 8){
+        heapify(heap, blockLen, &temp);
+    }
+    __syncthreads();
+
+    printBlock((float *) heap, blockLen);
+
     return;
 }
 
 /* Loads a block of data from global memory into shared memory.  Must be
  * called by all threads of a thread block to ensure proper operation. 
  */
-__device__ void loadBlock(float *g_block, float *l_block, int blockLen){
+__device__ void loadBlock(float *g_block, float *s_block, int blockLen,
+                          blockInfo_t *g_info, blockInfo_t *s_info){
 
-    for(int i = threadIdx.x; i < blockLen; i *= blockDim.x){
-        l_block[i] = g_block[i];
+    for(int i = threadIdx.x; i < blockLen; i += blockDim.x){
+        s_block[i] = g_block[i];
+    }
+    if (threadIdx.x == 0){
+        *s_info = *g_info;
+    }
+}
+
+/* Writes a block of data from shared memory into global memory.  Must be
+ * called by all threads of a thread block to ensure proper operation. 
+ */
+__device__ void writeBlock(float *g_block, float *s_block, int blockLen){
+
+    for(int i = threadIdx.x; i < blockLen; i += blockDim.x){
+        g_block[i] = s_block[i];
+    }
+}
+
+/* Prints a block of data in shared memory */
+__device__ void printBlock(float *s_block, int blockLen){
+    for (int i = threadIdx.x; i < blockLen; i += blockDim.x){
+        cuPrintf("s_block[%d] = %f\n", i, s_block[i]);
     }
 }
 
@@ -211,42 +236,66 @@ __device__ void loadBlock(float *g_block, float *l_block, int blockLen){
  * thread.  If this function is not executed by all of threads 0-7, the GPU
  * will stall.
  */
-__device__ void heapify(__volatile__ float *inList, int len, int depth){
-    int curTailIdx = 0; //Index of next element to heapify
-    int focusIdx; //Index of element currently being heapified
-    float focus, parent; //current element being heapified and its parent
+__device__ void heapify(__volatile__ float *inList, int len,
+                        __volatile__ int *temp){
+    
+    int focusIdx = 0; //Index of element currently being heapified
+    float focus=0, parent=0; //current element being heapified and its parent
+    int localTemp=0; /* Temp doesn't need to be re-read _every_ time.
+                    * Temp will be used to track the next element to percolate.
+                    */
 
+    if (threadIdx.x == 0){
+        *temp = 0; //Index of next element to heapify
+    }
+
+    localTemp = 0;
+    
     //We maintain the invariant that no two threads are processing on
     //adjacent layers of the heap in order to avoid memory conflicts and
     //race conditions.
-    while (curTailIdx < len){
-        if (threadIdx.x == (curTailIdx && 8)){
-            focusIdx = curTailIdx;
+    while (*temp < len){
+        if (threadIdx.x == (*temp & 7)){
+            focusIdx = *temp;
             focus = inList[focusIdx];
-            curTailIdx++;
+            *temp = *temp + 1;
+            //cuPrintf("Focusing on element %d with value %f\n",
+            //         focusIdx, focus);
         }
-
+        
         //Unrolled loop once to avoid race conditions and get a small speed
         //boost over using a for loop on 2 iterations.
         if (focusIdx != 0){
-            parent = inList[focusIdx>>1];
+            parent = inList[(focusIdx-1)>>1];
             //Swap focus and parent if focus is bigger than parent
             if (focus > parent){
+                //cuPrintf("Focus %f > parent %f\n", focus, parent); 
                 inList[focusIdx] = parent;
-                inList[focusIdx>>1] = focus;
-                focusIdx >>= 1;
+                inList[(focusIdx-1)>>1] = focus;
+                focusIdx = (focusIdx - 1)>>1;
+            }
+            else {
+                //cuPrintf("Parent %f > focus %f\n", parent, focus);
+                focusIdx = 0;
             }
         }
         if (focusIdx != 0){
-            parent = inList[focusIdx>>1];
+            parent = inList[(focusIdx-1)>>1];
             //Swap focus and parent if focus is bigger than parent
             if (focus > parent){
+                //cuPrintf("Focus %f > parent %f\n", focus, parent); 
                 inList[focusIdx] = parent;
-                inList[focusIdx>>1] = focus;
-                focusIdx >>= 1;
+                inList[(focusIdx-1)>>1] = focus;
+                focusIdx = (focusIdx-1)>>1;
             }
-        }
+            else {
+                //cuPrintf("Parent %f > focus %f\n", parent, focus);
+                focusIdx = 0; 
+            }
+       }
+        localTemp = *temp;
     }
+    return;
 }
 
 void usage(){
@@ -270,7 +319,7 @@ int main(int argc, char *argv[]){
     cudaDeviceProp devProp;
     cudaGetDeviceProperties(&devProp, 0);
 
-    int thread_count = devProp.maxThreadsDim[0];
+    int thread_count = 1;
     //int block_count = devProp.maxGridSize[0];
     int block_count = 1;
 
@@ -302,10 +351,12 @@ int main(int argc, char *argv[]){
         }
     }
 
+    /*
     printf("\nInitial list is:\n");
     for (int i = 0; i < len; i++){
         printf("%f\n", h_list[i]);
     }
+    */
 
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], devProp.maxGridSize[0]);
     //MergeSort(h_list, len, devProp.maxThreadsDim[0], 1);
@@ -315,10 +366,12 @@ int main(int argc, char *argv[]){
     cudaPrintfDisplay(stdout, true);
     cudaPrintfEnd();
 
+    /*
     printf("\nFinal list is:\n");
     for (int i = 0; i < len; i++){
         printf("%f\n", h_list[i]);
     }
+    */
 
     return 0;
 }
