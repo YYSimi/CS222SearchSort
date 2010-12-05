@@ -8,7 +8,7 @@
 int main(int argc, char **argv){
   int length;
   if(argc == 2)
-    length = *(argv[1]);
+    length = atoi(argv[1]);
   else
     length = LENGTH;
   float f = 0.0;
