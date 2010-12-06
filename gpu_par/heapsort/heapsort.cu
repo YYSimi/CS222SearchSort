@@ -204,68 +204,72 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
     if (threadIdx.x == 0){
         cuPrintf("My ID is %d\n", blockIdx.x);
     }
-
+    
     if (blockIdx.x == 0) { //NYI
         //cuPrintf("Block 0 reporting in\n");
     }
     else {
         cuPrintf("About to call init\n");
-    
+        
         //Initialize datastructures
         initBlocks(blockInfo, numBlocks, len);
         cuPrintf("Init finished.\n");
         __syncthreads();
-
+        
         nextIdx = blockIdx.x-1;
-
-        //Load memory
-        loadBlock(&d_list[nextIdx*BLOCKSIZE], (float *)heap,
-                  &blockInfo[nextIdx], &curBlockInfo);
         
-        cuPrintf("curBlockInfoOMG:  (bufsize: %d, writeloc: %d, heapified: %d\
- remaining: %d, size: %d\n",
-                 curBlockInfo.bufSize, curBlockInfo.writeLoc,
-                 curBlockInfo.heapified, curBlockInfo.remaining,
-                 curBlockInfo.size);
-        
-        if (curBlockInfo.heapified == 0){
-            //First warp heapifies
-            if (threadIdx.x < 8){
-                heapify(heap, curBlockInfo.size);
-            }
-            curBlockInfo.heapified = 1;
-            __syncthreads();
-        }
-        cuPrintf("Entering while Loop\n");
-        while (curBlockInfo.remaining > 0){
-            //First warp pops
+        while (nextIdx < numBlocks){
+            //Load memory
+            loadBlock(&d_list[nextIdx*BLOCKSIZE], (float *)heap,
+                      &blockInfo[nextIdx], &curBlockInfo);
             
-            cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
+            cuPrintf("curBlockInfoOMG:  (bufsize: %d, writeloc: %d, heapified: %d\
  remaining: %d, size: %d\n",
                      curBlockInfo.bufSize, curBlockInfo.writeLoc,
                      curBlockInfo.heapified, curBlockInfo.remaining,
                      curBlockInfo.size);
-
-
-            if (threadIdx.x == 0){
-                popCount = curBlockInfo.remaining;
-                if (popCount > OUTSIZE) {
-                    popCount = OUTSIZE;
+            
+            if (curBlockInfo.heapified == 0){
+                //First warp heapifies
+                if (threadIdx.x < 8){
+                    heapify(heap, curBlockInfo.size);
                 }
-                curBlockInfo.remaining -= popCount;
+                curBlockInfo.heapified = 1;
+                __syncthreads();
             }
-            if (threadIdx.x < 8){
-                pipelinedPop(heap, (float *)output, BLOCKDEPTH, popCount);
+            cuPrintf("Entering while Loop\n");
+            while (curBlockInfo.remaining > 0){
+                //First warp pops
+                
+                cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
+ remaining: %d, size: %d\n",
+                         curBlockInfo.bufSize, curBlockInfo.writeLoc,
+                         curBlockInfo.heapified, curBlockInfo.remaining,
+                         curBlockInfo.size);
+                
+                
+                if (threadIdx.x == 0){
+                    popCount = curBlockInfo.remaining;
+                    if (popCount > OUTSIZE) {
+                        popCount = OUTSIZE;
+                    }
+                    curBlockInfo.remaining -= popCount;
+                }
+                if (threadIdx.x < 8){
+                    pipelinedPop(heap, (float *)output, BLOCKDEPTH, popCount);
+                }
+                
+                cuPrintf("Just before Syncthreads...\n");
+                __syncthreads();
+                cuPrintf("Calling writeBlock with popcount %d\n", popCount);
+                writeBlock(d_list, output, popCount,
+                           &blockInfo[curBlockInfo.index], &curBlockInfo);
+                __syncthreads();
             }
-
-            cuPrintf("Just before Syncthreads...\n");
-            __syncthreads();
-            cuPrintf("Calling writeBlock with popcount %d\n", popCount);
-            writeBlock(d_list, output, popCount,
-                       &blockInfo[curBlockInfo.index], &curBlockInfo);
-            __syncthreads();
+            cuPrintf("After the while loop...\n");
+        
+        nextIdx += (gridDim.x - 1);
         }
-        cuPrintf("After the while loop...\n");
     }
     return;
 
