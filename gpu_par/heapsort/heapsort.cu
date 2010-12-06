@@ -2,9 +2,10 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
-#define BLOCKSIZE 1023  //Size of blocks at the bottom heap
-#define OUTSIZE 512 //Size of output shared memory
-#define BLOCKDEPTH 10 //Max Depth of bottom heap, and ceil of log of blocksize
+#define BLOCKSIZE 62  //Size of blocks at the bottom heap
+#define OUTSIZE 32 //Size of output shared memory
+#define BLOCKDEPTH 4 //Max Depth of bottom heap, and ceil of log of blocksize
+#define MINWARPS 1 //Minimum warp count to run code.
 
 //Tells us our current progress on building a given block.
 typedef struct blockInfo{
@@ -84,7 +85,7 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
     else if (threadsPerBlock < 2*devProp.warpSize){
         printf("At least 2 warps are required to run heapsort.  ");
         printf("Increasing thread count to 64.\n");
-        threadsPerBlock = 64;
+        threadsPerBlock = MINWARPS*devProp.warpSize;
     }
     if (threadsPerBlock > devProp.maxThreadsPerBlock) {
         printf("Device cannot handle %d threads per block.  Max is %d\n",
@@ -474,17 +475,17 @@ __device__ void pipelinedPop(__volatile__ float *heap, float *out_list,
             out_list[temp] = heap[0];
             temp = temp + 1;
             //cuPrintf("temp is: %d\n", *temp);
-            //cuPrintf("top of heap is: %f\n", heap[0]);
+            cuPrintf("top of heap is: %f\n", heap[0]);
         }
         
         //Unrolled loop once to avoid race conditions and get a small speed
         //boost over using a for loop on 2 iterations.
         if (curDepth < d-1){
             maxChildIdx = 2*focusIdx+1;
-            //cuPrintf("Children are %f, %f\n", heap[2*focusIdx+2], 
-            //         heap[maxChildIdx]); 
-            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
-            //         focusIdx);
+            cuPrintf("Children are %f, %f\n", heap[2*focusIdx+2], 
+                     heap[maxChildIdx]); 
+            cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+                     focusIdx);
             if (heap[2*focusIdx+2] > heap[maxChildIdx]){
                 maxChildIdx = 2*focusIdx+2;
             }
@@ -495,8 +496,8 @@ __device__ void pipelinedPop(__volatile__ float *heap, float *out_list,
 
         if (curDepth < d-1){
             maxChildIdx = 2*focusIdx+1;
-            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
-            //         focusIdx);
+            cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+                     focusIdx);
             if (heap[2*focusIdx+2] > heap[maxChildIdx]){
                 maxChildIdx = 2*focusIdx+2;
             }
@@ -528,7 +529,15 @@ __device__ void pipelinedPop(__volatile__ float *heap, float *out_list,
         focusIdx = maxChildIdx;
         curDepth++;
     }
-    
+    if (curDepth == d-1){
+        //cuPrintf("curDepth is %d\n", curDepth);
+        //cuPrintf("focusIdx is %d\n", focusIdx);
+        //cuPrintf("Depth is %d (max).  Focusing on element %d\n", curDepth,
+        //focusIdx);
+        heap[focusIdx] = 0;
+        curDepth++;
+        //continue;
+    }
 
     return;
 }
