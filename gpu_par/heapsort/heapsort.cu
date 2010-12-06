@@ -2,15 +2,18 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
-#define BLOCKSIZE 15  //Size of blocks at the bottom heap
-#define OUTSIZE 8 //Size of output shared memory
-#define BLOCKDEPTH 4 //Max Depth of bottom heap, and ceil of log of blocksize
+#define BLOCKSIZE 1023  //Size of blocks at the bottom heap
+#define METASIZE 511 //Size of metaheap
+#define METACACHE 4  //Size of metacache
+#define METADEPTH 9  //Max depth of metaheap (ceil of log of metaSize)
+#define OUTSIZE 512 //Size of output shared memory
+#define BLOCKDEPTH 10 //Max Depth of bottom heap, and ceil of log of blocksize
 #define MINWARPS 1 //Minimum warp count to run code.
 
 //Tells us our current progress on building a given block.
 typedef struct blockInfo{
-    short bufSize;    //How many popped elements are buffered right now?
-    short writeLoc;   //Index into blockwrite array for next write
+    int bufSize;    //How many popped elements are buffered right now?
+    int writeLoc;   //Index into blockwrite array for next write
     short remaining;  //How many elements are left to pop?
     short size;       //Total number of elements in the block.
     short index;      //Which block are we?
@@ -195,20 +198,22 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
                             int botHeapSize,
                             int warpSize, int metaDepth){
     
-    __shared__ float heap[BLOCKSIZE];
-    __shared__ float output[OUTSIZE];
-    __shared__ blockInfo_t curBlockInfo;
-    __shared__ int nextIdx;
-    __shared__ int popCount; //How many heap elements are we popping?
-
-    if (threadIdx.x == 0){
-        cuPrintf("My ID is %d\n", blockIdx.x);
-    }
     
     if (blockIdx.x == 0) { //NYI
-        //cuPrintf("Block 0 reporting in\n");
+
+        __shared__ float heap[METASIZE][METACACHE];
+        __shared__ float output[OUTSIZE];
+        __shared__ blockInfo_t curBlockInfo;
+
     }
     else {
+
+        __shared__ float heap[BLOCKSIZE];
+        __shared__ float output[OUTSIZE];
+        __shared__ blockInfo_t curBlockInfo;
+        __shared__ int nextIdx;
+        __shared__ int popCount; //How many heap elements are we popping?
+
         cuPrintf("About to call init\n");
         
         //Initialize datastructures
@@ -223,7 +228,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
             loadBlock(&d_list[nextIdx*BLOCKSIZE], (float *)heap,
                       &blockInfo[nextIdx], &curBlockInfo);
             
-            cuPrintf("curBlockInfoOMG:  (bufsize: %d, writeloc: %d, heapified: %d\
+            cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
  remaining: %d, size: %d\n",
                      curBlockInfo.bufSize, curBlockInfo.writeLoc,
                      curBlockInfo.heapified, curBlockInfo.remaining,
@@ -259,12 +264,13 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
                     pipelinedPop(heap, (float *)output, BLOCKDEPTH, popCount);
                 }
                 
-                cuPrintf("Just before Syncthreads...\n");
                 __syncthreads();
                 cuPrintf("Calling writeBlock with popcount %d\n", popCount);
+                
                 writeBlock(d_list, output, popCount,
                            &blockInfo[curBlockInfo.index], &curBlockInfo);
                 __syncthreads();
+                cuPrintf("At end, remaining:  %d\n", curBlockInfo.remaining);
             }
             cuPrintf("After the while loop...\n");
         
@@ -315,10 +321,15 @@ __device__ void writeBlock(float *g_block, float *s_block, int writeLen,
     __syncthreads();
     //Update the blockInfo struct in global memory
     if (threadIdx.x == 0){
+        //s_info->writeLoc += writeLen;
+        //*g_info = *s_info;
+        cuPrintf("setting writeLoc to %d\n", s_info->writeLoc + writeLen);
         s_info->writeLoc += writeLen;
-        *g_info = *s_info;
+        g_info->writeLoc = s_info->writeLoc;
+        g_info->remaining = s_info->remaining;
+        atomicAdd(&g_info->bufSize, writeLen);
     }
-
+    __syncthreads();
     return;
 }
 
@@ -477,17 +488,17 @@ __device__ void pipelinedPop(__volatile__ float *heap, float *out_list,
             out_list[temp] = heap[0];
             temp = temp + 1;
             //cuPrintf("temp is: %d\n", *temp);
-            cuPrintf("top of heap is: %f\n", heap[0]);
+            //cuPrintf("top of heap is: %f\n", heap[0]);
         }
         
         //Unrolled loop once to avoid race conditions and get a small speed
         //boost over using a for loop on 2 iterations.
         if (curDepth < d-1){
             maxChildIdx = 2*focusIdx+1;
-            cuPrintf("Children are %f, %f\n", heap[2*focusIdx+2], 
-                     heap[maxChildIdx]); 
-            cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
-                     focusIdx);
+            //cuPrintf("Children are %f, %f\n", heap[2*focusIdx+2], 
+            //         heap[maxChildIdx]); 
+            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+            //         focusIdx);
             if (heap[2*focusIdx+2] > heap[maxChildIdx]){
                 maxChildIdx = 2*focusIdx+2;
             }
@@ -498,8 +509,8 @@ __device__ void pipelinedPop(__volatile__ float *heap, float *out_list,
 
         if (curDepth < d-1){
             maxChildIdx = 2*focusIdx+1;
-            cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
-                     focusIdx);
+            //cuPrintf("Depth is %d, Focusing on element %d\n", curDepth,
+            //         focusIdx);
             if (heap[2*focusIdx+2] > heap[maxChildIdx]){
                 maxChildIdx = 2*focusIdx+2;
             }
