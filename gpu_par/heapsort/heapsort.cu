@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
-#define BLOCKSIZE 62  //Size of blocks at the bottom heap
-#define OUTSIZE 32 //Size of output shared memory
+#define BLOCKSIZE 15  //Size of blocks at the bottom heap
+#define OUTSIZE 8 //Size of output shared memory
 #define BLOCKDEPTH 4 //Max Depth of bottom heap, and ceil of log of blocksize
 #define MINWARPS 1 //Minimum warp count to run code.
 
@@ -29,13 +29,13 @@ __device__ void topLevel(float *d_list, int len); //NYI
 __device__ void heapify(__volatile__ float *in_list, int len);
 __device__ void pipelinedPop(__volatile__ float *heap, float *out_list, 
                              int d, int popCount);
-__device__ void loadBlock(float *g_block, float *s_block, int readLen,
+__device__ void loadBlock(float *g_block, float *s_block,
                           blockInfo_t *g_info, blockInfo_t *s_info);
 __device__ void writeBlock(float *g_block, float *s_block,
                            int writeLen,
                            blockInfo_t *g_info, blockInfo_t *s_info);
 __device__ void printBlock(float *s_block, int blockLen);
-__device__ void init(blockInfo_t *blockInfo, int numBlocks, int len);
+__device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len);
 __host__ int heapSort(float *h_list, 
                       int len, int threadsPerBlock,
                       int blocks, cudaDeviceProp devProp);
@@ -198,8 +198,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
     __shared__ float heap[BLOCKSIZE];
     __shared__ float output[OUTSIZE];
     __shared__ blockInfo_t curBlockInfo;
-    __shared__ int g_start, g_end;
-    __shared__ int blockLen;
+    __shared__ int nextIdx;
     __shared__ int popCount; //How many heap elements are we popping?
 
     if (threadIdx.x == 0){
@@ -213,22 +212,15 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         cuPrintf("About to call init\n");
     
         //Initialize datastructures
-        init(blockInfo, numBlocks, len);
+        initBlocks(blockInfo, numBlocks, len);
         cuPrintf("Init finished.\n");
         __syncthreads();
-        
-        g_start = (blockIdx.x-1)*botHeapSize;
-        g_end = (blockIdx.x)*botHeapSize;    
-        
-        if (g_end > len){
-            g_end = len;
-        }
-        
-        blockLen = g_end-g_start;
-        
+
+        nextIdx = blockIdx.x-1;
+
         //Load memory
-        loadBlock(&d_list[g_start], (float *)heap, blockLen,
-                  blockInfo, &curBlockInfo);
+        loadBlock(&d_list[nextIdx*BLOCKSIZE], (float *)heap,
+                  &blockInfo[nextIdx], &curBlockInfo);
         
         cuPrintf("curBlockInfoOMG:  (bufsize: %d, writeloc: %d, heapified: %d\
  remaining: %d, size: %d\n",
@@ -270,7 +262,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
             __syncthreads();
             cuPrintf("Calling writeBlock with popcount %d\n", popCount);
             writeBlock(d_list, output, popCount,
-                       blockInfo, &curBlockInfo);
+                       &blockInfo[curBlockInfo.index], &curBlockInfo);
             __syncthreads();
         }
         cuPrintf("After the while loop...\n");
@@ -280,22 +272,25 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
 }
 
 /* Loads a block of data from global memory into shared memory.  Must be
- * called by all threads of a thread block to ensure proper operation. 
+ * called by all threads of a thread block to ensure proper operation.
+ * g_info:  A pointer to the specific (global) blockinfo to be read. 
  */
-__device__ void loadBlock(float *g_block, float *s_block, int readLen,
+__device__ void loadBlock(float *g_block, float *s_block,
                           blockInfo_t *g_info, blockInfo_t *s_info){
     
+    if (threadIdx.x == 0){
+        *s_info = *g_info;
+        __threadfence_block();
+    }
+
     cuPrintf("Entering loadBlock\n");
-    for(int i = threadIdx.x; i < BLOCKSIZE; i += blockDim.x){
-        if(i < readLen){
+    for(int i = threadIdx.x; i < BLOCKSIZE; i += gridDim.x){
+        if(i < s_info->size){
             s_block[i] = g_block[i];
         } 
         else {
             s_block[i] = 0;
         }
-    }
-    if (threadIdx.x == 0){
-        *s_info = g_info[blockIdx.x - 1];
     }
     __syncthreads();
     return;
@@ -303,6 +298,7 @@ __device__ void loadBlock(float *g_block, float *s_block, int readLen,
 
 /* Writes a block of data from shared memory into global memory.  Must be
  * called by all threads of a thread block to ensure proper operation. 
+ * g_info:  A pointer to the specific (global) g_info to be written.
  */
 __device__ void writeBlock(float *g_block, float *s_block, int writeLen,
                            blockInfo_t *g_info, blockInfo_t *s_info){
@@ -316,7 +312,7 @@ __device__ void writeBlock(float *g_block, float *s_block, int writeLen,
     //Update the blockInfo struct in global memory
     if (threadIdx.x == 0){
         s_info->writeLoc += writeLen;
-        g_info[blockIdx.x-1] = *s_info;
+        *g_info = *s_info;
     }
 
     return;
@@ -330,8 +326,10 @@ __device__ void printBlock(float *s_block, int blockLen){
 }
 
 /* Initializes data structures for heapsort.  Must be run by all threads
- * of all blocks. */
-__device__ void init(blockInfo_t *blockInfo, int numBlocks, int len){
+ * of all blocks.
+ * blockInfo:  A pointer to the entire array of blockInfos.
+ */
+__device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len){
 
     if ((threadIdx.x == 0) && (blockIdx.x != 0) ){
 
