@@ -19,10 +19,11 @@ typedef struct metaEntry {
 
 //Tells us our current progress on building a given block.
 typedef struct blockInfo{
-    int bufSize;    //How many popped elements are buffered right now?
-    int writeLoc;   //Index into blockwrite array for next write
+    int bufSize;      //How many popped elements are buffered right now?
+    int writeLoc;     //Index into blockwrite array for next write
+    int readLoc;      //Index into blockwrite array for next read
     short remaining;  //How many elements are left to pop?
-    short size;       //Total number of elements in the block.
+    short size;       //Total number of elements in the block.  0 iff uninit.
     short index;      //Which block are we?
     short heapified;  //Only a bool is needed, but short maintains alignment.
 } blockInfo_t;
@@ -39,6 +40,8 @@ __device__ void topLevel(float *d_list, int len); //NYI
 __device__ void heapify(__volatile__ float *in_list, int len);
 __device__ void pipelinedPop(__volatile__ float *heap, float *out_list, 
                              int d, int popCount);
+__device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
+                           float *buffer, int firstThread, int *isDone);
 __device__ void loadBlock(float *g_block, float *s_block,
                           blockInfo_t *g_info, blockInfo_t *s_info);
 __device__ void writeBlock(float *g_block, float *s_block,
@@ -75,6 +78,7 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
 
     float *d_list, *midList, *sortedList; //various lists that will live on GPU
     blockInfo_t *blockInfo;
+    blockInfo_t *dummyBlocks;  //A bunch of zeroed blockinfos to zero GPU mem.
     int logLen; //log of length of list
     int metaDepth; //layers of metaheaps
     int topHeapSize; //Size of the top heap
@@ -170,23 +174,24 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
     }
 
     cudaMemcpy(d_list, h_list, len*sizeof(float), cudaMemcpyHostToDevice);
-    
+
+    numBlocks = ceil((float)len/BLOCKSIZE); //number of bottom heaps
+    printf("numHBlocks: %d\n", numBlocks);
+
+    dummyBlocks = (blockInfo_t *)calloc(numBlocks, sizeof(blockInfo_t));
+
+
     if ( (cudaMalloc((void **) &blockInfo, len*sizeof(blockInfo_t))) == 
          cudaErrorMemoryAllocation) {
         printf("Error:  Insufficient device memory at line %d\n", __LINE__);
         return -1;
     }
-    
-    numBlocks = ceil((float)len/BLOCKSIZE); //number of bottom heaps
-    printf("numHBlocks: %d\n", numBlocks);
+
+    cudaMemcpy(blockInfo, dummyBlocks, len*sizeof(float),
+               cudaMemcpyHostToDevice);
 
     printf("Attempting to call GPUHeapSort\n\n");
-    /*
-    GPUHeapSort<<<blocks, threadsPerBlock,
-        ( 1<<(logBotHeapSize + 3) + 1<<(logBotHeapSize+2) ) >>>
-        (d_list, blockInfo, len, topHeapSize, 1<<logBotHeapSize, 
-         devProp.warpSize, metaDepth);
-    */
+
     GPUHeapSort<<<blocks, threadsPerBlock>>>
         (d_list, midList, sortedList, blockInfo, numBlocks, 
          len, 0, BLOCKSIZE, devProp.warpSize, metaDepth);
@@ -206,26 +211,46 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
                             int botHeapSize,
                             int warpSize, int metaDepth){
     
+
+    __shared__ metaEntry metaHeap[METASIZE];
+    __shared__ float buffer[METASIZE][METACACHE];
+    __shared__ float output[OUTSIZE];
     
     if (blockIdx.x == 0) { //NYI
 
-        /*
-        __shared__ metaEntry heap[METASIZE];
-        __shared__ float buffer[METASIZE][METACACHE];
-        __shared__ float output[OUTSIZE];
-        __shared__ blockInfo_t curBlockInfo;
-        */
+        __shared__ int isDone;  //Tracks how many blocks we have loaded.
+        int nextBlock;
+
         //Initialize datastructures
-        //initMetaHeap(heap, buffer);
+        initMetaHeap(metaHeap, buffer);
+        __syncthreads();
+
+        //First warp maintains metaheap.
+        if (threadIdx.x < 31){
+
+
+        }
+        //Laters warps maintain buffers.
+        //REMOVE IF PART OF THE CLAUSE ONCE YOU ARE DONE DEBUGGING!
+        else if (threadIdx.x < 63) {
+            /*while (isDone < numBlocks) {
+
+                
+                
+              }*/
+        }
 
     }
     else {
-
-        __shared__ float heap[BLOCKSIZE];
-        __shared__ float output[OUTSIZE];
         __shared__ blockInfo_t curBlockInfo;
-        __shared__ int curIdx;
         __shared__ int popCount; //How many heap elements are we popping?
+        __shared__ float *heap;
+        int curIdx; //The index of the current block
+ 
+        if (threadIdx.x == 0){
+            heap = (float *)metaHeap; //Reuse the metaheap space.
+        }
+        __syncthreads();
 
         cuPrintf("About to call init\n");
         
@@ -319,6 +344,82 @@ __device__ void loadBlock(float *g_block, float *s_block,
     return;
 }
 
+/*
+ * fillBuffer:  Fills empty slots in buffer with data from g_block.
+ *              Expects to be called by METACACHE blocks.
+ * g_block:  Pointer to the location we should start reading from.
+ * blockInfo:  Pointer to the blockInfo struct for the g_block.
+ * buffer:  pointer to the location of a float[4] buffer for the metaheap.
+ * firstThread:  The first of METACACHE contiguous threads running this func.
+ */
+__device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
+                           float *buffer, int firstThread, int *isDone){
+    __shared__ int readLoc;
+    __shared__ int isReady;
+    __shared__ int writeLoc;
+    __shared__ int toCacheCount; //How many new elements do we need to cache?
+    int index;
+
+    //The first three threads perform slow memory operations.  The fourth
+    //does some processing while the others are waiting for memory.
+    if(threadIdx.x == firstThread) {
+        isReady = blockInfo->size;
+    }
+    if (threadIdx.x == firstThread+1){
+        readLoc = blockInfo->readLoc;
+    }
+    if (threadIdx.x == firstThread+2){
+        writeLoc = blockInfo->writeLoc;
+    }
+    if (threadIdx.x == firstThread+3){
+        toCacheCount = 0;
+        for (int i = 0; i < METACACHE; i++){
+            if (buffer[i] == INVALID) {
+                toCacheCount++;
+            }
+        }
+    }
+    __threadfence_block();
+
+    //Block isn't ready.  Do nothing.
+    if (isReady == 0){
+        return;
+    }
+    else {
+        //For threads firstThread through METACACHE...
+        index = threadIdx.x - firstThread;
+        if (index < METACACHE){
+            //Do we have an invalid cache entry?
+            if (buffer[index] == INVALID) {
+                //Does g_block have an element that can fill our invalid entry?
+                if (readLoc + index < writeLoc){
+                    buffer[index] = g_block[readLoc+index];
+                }
+            }
+        }
+    }
+
+    if (threadIdx.x == firstThread){
+        if (readLoc + toCacheCount < writeLoc){
+            toCacheCount = writeLoc - readLoc;
+            __threadfence_block();
+        }
+    }
+
+    //update the blockData structure in global memory
+    if (threadIdx.x == firstThread){
+        atomicSub(&blockInfo->bufSize, toCacheCount);  
+    }
+    if (threadIdx.x == firstThread + 1){
+        blockInfo->readLoc = readLoc + toCacheCount;
+    }
+    if (threadIdx.x == firstThread + 2){
+        *isDone = *isDone + 1;
+    }
+
+    return;
+}
+
 /* Writes a block of data from shared memory into global memory.  Must be
  * called by all threads of a thread block to ensure proper operation. 
  * g_info:  A pointer to the specific (global) g_info to be written.
@@ -354,7 +455,7 @@ __device__ void printBlock(float *s_block, int blockLen){
 }
 
 /* Initializes data structures for heapsort.  Must be run by all threads
- * of all blocks.
+ * of all nonzero blocks.
  * blockInfo:  A pointer to the entire array of blockInfos.
  */
 __device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len){
@@ -367,6 +468,7 @@ __device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len){
         blockInfo_t BI;
         BI.bufSize = 0;
         BI.heapified = 0;
+        BI.readLoc = 0;
         BI.remaining = BLOCKSIZE;
         BI.size = BLOCKSIZE;
         for (int idx = (blockIdx.x-1); idx < numBlocks; idx += (gridDim.x-1)){
