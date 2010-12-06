@@ -12,6 +12,7 @@ typedef struct blockInfo{
     short writeLoc;   //Index into blockwrite array for next write
     short remaining;  //How many elements are left to pop?
     short size;       //Total number of elements in the block.
+    short index;      //Which block are we?
     short heapified;  //Only a bool is needed, but short maintains alignment.
 } blockInfo_t;
 
@@ -205,12 +206,13 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         //cuPrintf("Block 0 reporting in\n");
     }
     else {
-        cuPrintf("Uh?");
+        cuPrintf("About to call init\n");
     
         //Initialize datastructures
         init(blockInfo, numBlocks, len);
+        cuPrintf("Init finished.\n");
         __syncthreads();
-
+        
         g_start = (blockIdx.x-1)*botHeapSize;
         g_end = (blockIdx.x)*botHeapSize;    
         
@@ -222,20 +224,19 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         
         //Load memory
         loadBlock(&d_list[g_start], (float *)heap, blockLen,
-                  &blockInfo[blockIdx.x-1], &curBlockInfo);
+                  blockInfo, &curBlockInfo);
         
-        __syncthreads();
-        
-        cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d \
-remaining: %d, size: %d\n",
+        cuPrintf("curBlockInfoOMG:  (bufsize: %d, writeloc: %d, heapified: %d\
+ remaining: %d, size: %d\n",
                  curBlockInfo.bufSize, curBlockInfo.writeLoc,
                  curBlockInfo.heapified, curBlockInfo.remaining,
                  curBlockInfo.size);
-
+        
         if (curBlockInfo.heapified == 0){
             //First warp heapifies
+            cuPrintf("Heapifying");
             if (threadIdx.x < 8){
-                heapify(heap, blockLen);
+                heapify(heap, curBlockInfo.size);
             }
             curBlockInfo.heapified = 1;
             __syncthreads();
@@ -254,14 +255,20 @@ remaining: %d, size: %d\n",
                 pipelinedPop(heap, (float *)output, BLOCKDEPTH, popCount);
             }
             
-            //writeBlock
-            
+            cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
+ remaining: %d, size: %d\n",
+                     curBlockInfo.bufSize, curBlockInfo.writeLoc,
+                     curBlockInfo.heapified, curBlockInfo.remaining,
+                     curBlockInfo.size);
+
+            cuPrintf("Just before Syncthreads...\n");
             __syncthreads();
             cuPrintf("Calling writeBlock with popcount %d\n", popCount);
-            writeBlock(&d_list[g_start], output, popCount,
-                       &blockInfo[blockIdx.x-1], &curBlockInfo);
+            writeBlock(d_list, output, popCount,
+                       blockInfo, &curBlockInfo);
             __syncthreads();
         }
+        cuPrintf("After the while loop...\n");
     }
     return;
 
@@ -273,12 +280,16 @@ remaining: %d, size: %d\n",
 __device__ void loadBlock(float *g_block, float *s_block, int readLen,
                           blockInfo_t *g_info, blockInfo_t *s_info){
     
+    cuPrintf("Entering loadBlock\n");
     for(int i = threadIdx.x; i < readLen; i += blockDim.x){
         s_block[i] = g_block[i]; 
     }
     if (threadIdx.x == 0){
+        cuPrintf("Loaded blockInfo from %d\n", blockIdx.x-1);
+        cuPrintf("size is: %d\n", g_info[1].size);
         *s_info = g_info[blockIdx.x - 1];
     }
+    __syncthreads();
     return;
 }
 
@@ -291,13 +302,13 @@ __device__ void writeBlock(float *g_block, float *s_block, int writeLen,
     for(int i = threadIdx.x; i < writeLen; i += blockDim.x){
         g_block[s_info->writeLoc+i] = s_block[i];
         cuPrintf("writing block %d to %d with value %f\n",
-                 s_info->writeLoc + i, i, s_block[i]);
+                 i, s_info->writeLoc + i, g_block[s_info->writeLoc + i]);
     }
     __syncthreads();
     //Update the blockInfo struct in global memory
     if (threadIdx.x == 0){
         s_info->writeLoc += writeLen;
-        *g_info = *s_info;
+        g_info[blockIdx.x-1] = *s_info;
     }
 
     return;
@@ -313,7 +324,7 @@ __device__ void printBlock(float *s_block, int blockLen){
 /* Initializes data structures for heapsort.  Must be run by all threads
  * of all blocks. */
 __device__ void init(blockInfo_t *blockInfo, int numBlocks, int len){
-    cuPrintf("wtf mate?\n");
+
     if ((threadIdx.x == 0) && (blockIdx.x != 0) ){
 
         cuPrintf("attempting to init\n");
@@ -326,6 +337,7 @@ __device__ void init(blockInfo_t *blockInfo, int numBlocks, int len){
         BI.size = BLOCKSIZE;
         for (int idx = (blockIdx.x-1); idx < numBlocks; idx += (blockDim.x-1)){
             BI.writeLoc = idx*BLOCKSIZE;
+            BI.index = idx;
             cuPrintf("writeloc is %d\n", BI.writeLoc);
             //Did we overrun our bounds when setting size?
             if ((idx+1)*BLOCKSIZE > len){
@@ -333,7 +345,6 @@ __device__ void init(blockInfo_t *blockInfo, int numBlocks, int len){
                 BI.remaining = BI.size;
             }
             blockInfo[idx] = BI;
-            cuPrintf("BI stored size: %d\n", blockInfo[idx].size); 
         }
     }
     __syncthreads();
