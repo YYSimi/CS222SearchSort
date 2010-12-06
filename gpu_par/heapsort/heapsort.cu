@@ -2,13 +2,20 @@
 #include <stdio.h>
 #include "../common/cuPrintf.cu"
 
-#define BLOCKSIZE 1023  //Size of blocks at the bottom heap
-#define METASIZE 511 //Size of metaheap
-#define METACACHE 4  //Size of metacache
-#define METADEPTH 9  //Max depth of metaheap (ceil of log of metaSize)
-#define OUTSIZE 512 //Size of output shared memory
-#define BLOCKDEPTH 10 //Max Depth of bottom heap, and ceil of log of blocksize
-#define MINWARPS 1 //Minimum warp count to run code.
+#define BLOCKSIZE 1023 //Size of blocks at the bottom heap
+#define METASIZE 511   //Size of metaheap
+#define METACACHE 4    //Size of metacache
+#define METADEPTH 9    //Max depth of metaheap (ceil of log of metaSize)
+#define OUTSIZE 512    //Size of output shared memory
+#define BLOCKDEPTH 10  //Max Depth of bottom heap, and ceil of log of blocksize
+#define MINWARPS 1     //Minimum warp count to run code.
+#define INVALID -1     //special value signifying invalid Buffer/heap entry.
+
+typedef struct metaEntry {
+    float value;
+    short key;
+} metaEntry_t;
+
 
 //Tells us our current progress on building a given block.
 typedef struct blockInfo{
@@ -39,6 +46,7 @@ __device__ void writeBlock(float *g_block, float *s_block,
                            blockInfo_t *g_info, blockInfo_t *s_info);
 __device__ void printBlock(float *s_block, int blockLen);
 __device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len);
+__device__ void initMetaHeap(metaEntry *heap, float BUF[METASIZE][METACACHE]);
 __host__ int heapSort(float *h_list, 
                       int len, int threadsPerBlock,
                       int blocks, cudaDeviceProp devProp);
@@ -201,9 +209,14 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
     
     if (blockIdx.x == 0) { //NYI
 
-        __shared__ float heap[METASIZE][METACACHE];
+        /*
+        __shared__ metaEntry heap[METASIZE];
+        __shared__ float buffer[METASIZE][METACACHE];
         __shared__ float output[OUTSIZE];
         __shared__ blockInfo_t curBlockInfo;
+        */
+        //Initialize datastructures
+        //initMetaHeap(heap, buffer);
 
     }
     else {
@@ -211,7 +224,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         __shared__ float heap[BLOCKSIZE];
         __shared__ float output[OUTSIZE];
         __shared__ blockInfo_t curBlockInfo;
-        __shared__ int nextIdx;
+        __shared__ int curIdx;
         __shared__ int popCount; //How many heap elements are we popping?
 
         cuPrintf("About to call init\n");
@@ -221,12 +234,12 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         cuPrintf("Init finished.\n");
         __syncthreads();
         
-        nextIdx = blockIdx.x-1;
+        curIdx = blockIdx.x-1;
         
-        while (nextIdx < numBlocks){
+        while (curIdx < numBlocks){
             //Load memory
-            loadBlock(&d_list[nextIdx*BLOCKSIZE], (float *)heap,
-                      &blockInfo[nextIdx], &curBlockInfo);
+            loadBlock(&d_list[curIdx*BLOCKSIZE], (float *)heap,
+                      &blockInfo[curIdx], &curBlockInfo);
             
             cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
  remaining: %d, size: %d\n",
@@ -274,7 +287,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
             }
             cuPrintf("After the while loop...\n");
         
-        nextIdx += (gridDim.x - 1);
+        curIdx += (gridDim.x - 1);
         }
     }
     return;
@@ -369,6 +382,20 @@ __device__ void initBlocks(blockInfo_t *blockInfo, int numBlocks, int len){
         }
     }
     __syncthreads();
+}
+
+__device__ void initMetaHeap(metaEntry *heap, float buf[METASIZE][METACACHE]){
+
+    for (int i = threadIdx.x; i < METASIZE; i += blockDim.x){
+        heap[i].value = INVALID;
+        heap[i].key = i;
+        for (int j = 0; j < METACACHE; j++){
+            buf[i][j] = INVALID;
+            cuPrintf("Invalidating buf[%d][%d]\n", i, j); 
+        }
+    }
+
+    return;
 }
 
 /* Heapifies a list using a single warp.  Must be run on the bottom warp of a
