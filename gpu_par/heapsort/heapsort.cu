@@ -201,7 +201,10 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
     __shared__ int blockLen;
     __shared__ int popCount; //How many heap elements are we popping?
 
-    cuPrintf("My ID is %d\n", blockIdx.x);
+    if (threadIdx.x == 0){
+        cuPrintf("My ID is %d\n", blockIdx.x);
+    }
+
     if (blockIdx.x == 0) { //NYI
         //cuPrintf("Block 0 reporting in\n");
     }
@@ -234,7 +237,6 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         
         if (curBlockInfo.heapified == 0){
             //First warp heapifies
-            cuPrintf("Heapifying");
             if (threadIdx.x < 8){
                 heapify(heap, curBlockInfo.size);
             }
@@ -244,6 +246,14 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         cuPrintf("Entering while Loop\n");
         while (curBlockInfo.remaining > 0){
             //First warp pops
+            
+            cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
+ remaining: %d, size: %d\n",
+                     curBlockInfo.bufSize, curBlockInfo.writeLoc,
+                     curBlockInfo.heapified, curBlockInfo.remaining,
+                     curBlockInfo.size);
+
+
             if (threadIdx.x == 0){
                 popCount = curBlockInfo.remaining;
                 if (popCount > OUTSIZE) {
@@ -254,12 +264,6 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
             if (threadIdx.x < 8){
                 pipelinedPop(heap, (float *)output, BLOCKDEPTH, popCount);
             }
-            
-            cuPrintf("curBlockInfo:  (bufsize: %d, writeloc: %d, heapified: %d\
- remaining: %d, size: %d\n",
-                     curBlockInfo.bufSize, curBlockInfo.writeLoc,
-                     curBlockInfo.heapified, curBlockInfo.remaining,
-                     curBlockInfo.size);
 
             cuPrintf("Just before Syncthreads...\n");
             __syncthreads();
@@ -281,12 +285,15 @@ __device__ void loadBlock(float *g_block, float *s_block, int readLen,
                           blockInfo_t *g_info, blockInfo_t *s_info){
     
     cuPrintf("Entering loadBlock\n");
-    for(int i = threadIdx.x; i < readLen; i += blockDim.x){
-        s_block[i] = g_block[i]; 
+    for(int i = threadIdx.x; i < BLOCKSIZE; i += blockDim.x){
+        if(i < readLen){
+            s_block[i] = g_block[i];
+        } 
+        else {
+            s_block[i] = 0;
+        }
     }
     if (threadIdx.x == 0){
-        cuPrintf("Loaded blockInfo from %d\n", blockIdx.x-1);
-        cuPrintf("size is: %d\n", g_info[1].size);
         *s_info = g_info[blockIdx.x - 1];
     }
     __syncthreads();
@@ -335,7 +342,7 @@ __device__ void init(blockInfo_t *blockInfo, int numBlocks, int len){
         BI.heapified = 0;
         BI.remaining = BLOCKSIZE;
         BI.size = BLOCKSIZE;
-        for (int idx = (blockIdx.x-1); idx < numBlocks; idx += (blockDim.x-1)){
+        for (int idx = (blockIdx.x-1); idx < numBlocks; idx += (gridDim.x-1)){
             BI.writeLoc = idx*BLOCKSIZE;
             BI.index = idx;
             cuPrintf("writeloc is %d\n", BI.writeLoc);
@@ -413,6 +420,23 @@ __device__ void heapify(__volatile__ float *inList, int len){
        }
         //localTemp = *temp;
     }
+    
+    //Empty the pipeline before returning
+    while (focusIdx !=0){
+        parent = inList[(focusIdx-1)>>1];
+        //Swap focus and parent if focus is bigger than parent
+        if (focus > parent){
+            cuPrintf("Focus %f > parent %f\n", focus, parent); 
+            inList[focusIdx] = parent;
+            inList[(focusIdx-1)>>1] = focus;
+            focusIdx = (focusIdx-1)>>1;
+        }
+        else {
+            //cuPrintf("Parent %f > focus %f\n", parent, focus);
+            focusIdx = 0; 
+        }
+    }
+    
     return;
 }
 
