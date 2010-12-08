@@ -12,20 +12,20 @@ int main(int argc, char ** argv){
   }
 
   int nlists = argc - 1;
-  Data * data = malloc(sizeof(Data));
+  Data * data = (Data *) malloc(sizeof(Data));
   if(data == NULL){
     fprintf(stderr, "Unable to allocate memory\n");
     exit(1);
   }
   char ** lists;
-  lists = malloc(sizeof(char *) * nlists);
+  lists = (char **) malloc(sizeof(char *) * nlists);
   if(lists == NULL){
     fprintf(stderr, "Unable to allocated memory\n");
     exit(1);
   }
   for(i = 0; i < nlists; i++){
     int len = strlen(argv[i+1]);
-    lists[i] = malloc((sizeof(char)*len) + 1);
+    lists[i] = (char *) malloc((sizeof(char)*len) + 1);
     if(lists[i] == NULL){
       fprintf(stderr, "Unable to allocate memory\n");
       exit(1);
@@ -36,7 +36,7 @@ int main(int argc, char ** argv){
 
   //  print_data(data, 0); //uncomment to check that data was read in properly
 
-  Results * results = malloc(sizeof(Results));
+  Results * results = (Results *) malloc(sizeof(Results));
   if(results == NULL){
     fprintf(stderr, "Unable to allocate memory\n");
     exit(1);
@@ -44,13 +44,13 @@ int main(int argc, char ** argv){
 
   results->ntests = 2;
   results->nlists = data->nlists;
-  results->rlist = malloc(sizeof(Result *) * nlists);
+  results->rlist = (Result **) malloc(sizeof(Result *) * nlists);
   if(results->rlist == NULL){
     fprintf(stderr, "Out of memory\n");
     exit(1);
   }
   for(i = 0; i < nlists; i++){
-    results->rlist[i] = malloc(sizeof(Result)*results->ntests);
+    results->rlist[i] = (Result *) malloc(sizeof(Result)*results->ntests);
     if(results->rlist[i] == NULL){
       fprintf(stderr, "Out of Memory\n");
       exit(1);

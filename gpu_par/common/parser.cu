@@ -25,7 +25,7 @@ int load_array (Data * data, char * fname, int idx){
     fprintf(stderr, "%s is not properly formatted\n", fname);
     exit(1);
   }
-  data->fp_arr[idx] = malloc(sizeof(float *) * llen);
+  data->fp_arr[idx] = (float *) malloc(sizeof(float *) * llen);
 
   if(data->fp_arr[idx] == NULL){
     fprintf(stderr, "Unable to allocate space for %s in memory\n", fname);
@@ -41,12 +41,12 @@ int load_array (Data * data, char * fname, int idx){
 
 void parser(Data * data, int nlists, char ** names){
   data->nlists = nlists;
-  data->fp_arr = malloc(sizeof(float *) * nlists);
+  data->fp_arr = (float **) malloc(sizeof(float *) * nlists);
   if(data->fp_arr == NULL){
     fprintf(stderr,"Unable to allocate memory\n");
     exit(1);
   }
-  data->length = malloc(sizeof(long) * nlists);
+  data->length = (long *) malloc(sizeof(long) * nlists);
   if(data->length == NULL){
     fprintf(stderr, "Unable to allocate memory\n");
     exit(1);
