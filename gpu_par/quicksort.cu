@@ -4,6 +4,7 @@
 #include "common/io.h"
 #include <time.h>
 #include <cuda.h>
+#include "common/cuPrintf.cu"
 
 /*********************** Data Definitions ********************************/
 #define THREADS_PER_BLOCK 64
@@ -205,6 +206,7 @@ void gqSort(data * ls, int l, int r, int length){
   if((r - l) > 1){
     //1. grab pivot
     float pivot = ls[r].val;
+    printf("(l, r): (%d, %d)\n", l, r);
 
     //2. set-up gpu vars
     int numBlocks = ceil((l - r - 1) / THREADS_PER_BLOCK);
@@ -283,6 +285,9 @@ double gpu_quicksort(float unsorted[], int length, float sorted[]){
  */
 void quicksort(float unsorted[], int length, Result * result){
   result = (Result *) malloc(sizeof(Result));
+
+  cudaPrintfInit();
+  
   if(result == NULL){
     fprintf(stderr, "Out of Memory\n");
     exit(1);
@@ -300,8 +305,13 @@ void quicksort(float unsorted[], int length, Result * result){
       n++;
     printf("CPU #%d: %f\t", i, sorted[0][i]); 
     printf("GPU #%d: %f", i, sorted[1][i]); 
-    printf("\n", i, sorted[0][i); 
+    printf("\n", i, sorted[0][i]); 
   }
+
+  cudaThreadSynchronize();
+  cudaPrintfDisplay(stdout,true);
+  cudaPrintfEnd();
+
   if(n!= 0){
     fprintf(stdout, "There were %d discrepencies between the CPU and GPU QuickSort algorithms\n", n);
   }
