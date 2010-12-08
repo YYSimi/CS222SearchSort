@@ -50,15 +50,15 @@ int main(int argc, char ** argv){
     exit(1);
   }
   for(i = 0; i < nlists; i++){
-    results->rlists[i] = malloc(sizeof(Result)*results->ntests);
-    if(results->rlists[i] == NULL){
-      fprintf("Out of Memory\n");
+    results->rlist[i] = malloc(sizeof(Result)*results->ntests);
+    if(results->rlist[i] == NULL){
+      fprintf(stderr, "Out of Memory\n");
       exit(1);
     }
   }
 
   for(i = 0; i < data->nlists; i++){
-    quicksort(data->fp_arr[i], data->length[i], results[0][i]);
+    quicksort(data->fp_arr[i], data->length[i], &(results->rlist[0][i]));
     /* Execute the sorting algorithms here, each one on data->fp_arr[i] */
   }
 
