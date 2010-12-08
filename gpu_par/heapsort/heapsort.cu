@@ -143,9 +143,10 @@ int heapSort(float *h_list, metaEntry_t *superTemp,
     }
 
     //Nevermind the fancy calculations above... let's just do this.
-    topHeapSize = ceil(len/BLOCKSIZE);
+    topHeapSize = ceil((float)len/BLOCKSIZE);
 
     printf("metaDepth is %d\n", metaDepth);
+    printf("len is %d, blocksize is %d\n", len, BLOCKSIZE); 
     printf("topHeapSize is %d\n", topHeapSize); 
 
     if (metaDepth > blocks){
@@ -237,7 +238,6 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
         if (threadIdx.x == 32){
             metaHeap = (metaEntry_t *)heap; //reuse the "heap" declaration.
             isDone = 0;
-            //cuPrintf("Well... I tried... isDone should be %d\n", isDone);
         }
 
         __syncthreads();
@@ -249,6 +249,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
 
         //First warp maintains metaheap.
         if (threadIdx.x < 31){
+            cuPrintf("topHeapSize is %d\n", topHeapSize);
             metaHeapify(metaHeap, buffer, topHeapSize);
             //cuPrintf("warp 0 says that isDone is now %d\n", isDone);
         }
@@ -385,7 +386,8 @@ __device__ void loadBlock(float *g_block, float *s_block,
  * firstThread:  The first of METACACHE contiguous threads running this func.
  */
 __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
-                           float *buffer, int firstThread, int *isDone,
+                           float *buffer,
+                           int firstThread, int *isDone,
                            int nextBlock_temp){
     __shared__ int readLoc;
     __shared__ int isReady;
@@ -425,7 +427,7 @@ __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
         //For threads firstThread through METACACHE...
         index = threadIdx.x - firstThread;
         if (index < METACACHE){
-            cuPrintf("index < METACACHE! ! !\n");
+            //cuPrintf("index < METACACHE! ! !\n");
             //Note that the following three lines risk a race w/warp 0.  Alas, 
             //atomic TAS on shared is not implemented in compute capacity 1.1, so this is
             //more-or-less unavoidable.  We need to atomically test the buffer for 
@@ -434,12 +436,15 @@ __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
             //an atomic TAS would be used and all would be well.
             //Do we have an invalid cache entry?
             if (buffer[index] == INVALID) {
-                cuPrintf("INVALID index! ! !\n");
+                //cuPrintf("INVALID index! ! !\n");
                 //Does g_block have an element that can fill our invalid entry?
                 if (readLoc + index < writeLoc){                     
                     buffer[index] = g_block[readLoc+index];
                     cuPrintf("filled %d th buffer %d with %f\n", 
                              nextBlock_temp, index,  buffer[index]);
+                    cuPrintf("buffer addr is %d\n", (long)&buffer[index]);
+                    cuPrintf("read addr is %d\n",
+                             (long)&g_block[readLoc+index]);
                 }
             }
         }
@@ -652,7 +657,8 @@ __device__ void heapify(__volatile__ float *inList, int len){
  * will stall.
  */
 __device__ void metaHeapify(__volatile__ metaEntry_t *inList,
-                            __volatile__ float buf[METASIZE][METACACHE], int len){
+                            __volatile__ float buf[METASIZE][METACACHE], 
+                            int len){
     
     int focusIdx = 0; //Index of element currently being heapified
     __volatile__ metaEntry_t focus, parent; //current element being heapified and its parent
