@@ -4,6 +4,8 @@
 #include "io.h"
 
 int main(int argc, char ** argv){
+  int i;
+
   if(argc == 1){
     printf("Please specify at least one floating point array to operate upon!\n");
     exit(1);
@@ -21,7 +23,7 @@ int main(int argc, char ** argv){
     fprintf(stderr, "Unable to allocated memory\n");
     exit(1);
   }
-  for(int i = 0; i < nlists; i++){
+  for(i = 0; i < nlists; i++){
     int len = strlen(argv[i+1]);
     lists[i] = malloc((sizeof(char)*len) + 1);
     if(lists[i] == NULL){
@@ -40,10 +42,23 @@ int main(int argc, char ** argv){
     exit(1);
   }
 
-  results->ntests = 0;
+  results->ntests = 2;
   results->nlists = data->nlists;
+  results->rlist = malloc(sizeof(Result *) * nlists);
+  if(results->rlist == NULL){
+    fprintf(stderr, "Out of memory\n");
+    exit(1);
+  }
+  for(i = 0; i < nlists; i++){
+    results->rlists[i] = malloc(sizeof(Result)*results->ntests);
+    if(results->rlists[i] == NULL){
+      fprintf("Out of Memory\n");
+      exit(1);
+    }
+  }
 
-  for(int i = 0; i < data->nlists; i++){
+  for(i = 0; i < data->nlists; i++){
+    quicksort(data->fp_arr[i], data->length[i], results[0][i]);
     /* Execute the sorting algorithms here, each one on data->fp_arr[i] */
   }
 

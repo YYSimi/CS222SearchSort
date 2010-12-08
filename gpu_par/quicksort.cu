@@ -201,7 +201,7 @@ __global__ void gpuPartitionSwap(data * input, data * output, vars * endpts,
 
 void gqSort(data * ls, int l, int r, int length){
   //if (r - l) > 1
-  if((r - l) > 1){
+0  if((r - l) > 1){
     //1. grab pivot
     float pivot = ls[r].val;
 

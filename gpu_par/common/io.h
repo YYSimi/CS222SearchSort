@@ -96,4 +96,10 @@ void parser(Data * data, int nlists, char ** names);
  */
 void print_data (Data * data, int elt_flag);
 
+// ++++++++++++++++++++++++++++ SORTING ALGORITHMS +++++++++++++++++++++++++ //
+
+void quicksort(float unsorted[], int length, Result * result);
+
+void radixsort(float unsorted[], int length, Result * result);
+
 #endif
