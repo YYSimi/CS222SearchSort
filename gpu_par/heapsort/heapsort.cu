@@ -38,8 +38,8 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
 __device__ void bottomLevel(float *d_list, int len); //NYI
 __device__ void topLevel(float *d_list, int len); //NYI
 __device__ void heapify(__volatile__ float *in_list, int len);
-__device__ void metaHeapify(__volatile__ float *in_list,
-                            float buf[METASIZE][METACACHE], int len);
+__device__ void metaHeapify(__volatile__ metaEntry_t *in_list,
+                            __volatile__ float buf[METASIZE][METACACHE], int len);
 __device__ void pipelinedPop(__volatile__ float *heap, float *out_list, 
                              int d, int popCount);
 __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
@@ -140,6 +140,9 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
         topHeapSize = len>>temp;
     }
 
+    //Nevermind the fancy calculations above... let's just do this.
+    topHeapSize = ceil(len/BLOCKSIZE);
+
     printf("metaDepth is %d\n", metaDepth);
     printf("topHeapSize is %d\n", topHeapSize); 
 
@@ -196,7 +199,7 @@ int heapSort(float *h_list, int len, int threadsPerBlock, int blocks,
 
     GPUHeapSort<<<blocks, threadsPerBlock>>>
         (d_list, midList, sortedList, blockInfo, numBlocks, 
-         len, 0, BLOCKSIZE, devProp.warpSize, metaDepth);
+         len, topHeapSize, BLOCKSIZE, devProp.warpSize, metaDepth);
 
     cudaThreadSynchronize();
     cudaMemcpy(h_list, d_list, len*sizeof(float), cudaMemcpyDeviceToHost);
@@ -218,10 +221,11 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
     __shared__ float buffer[METASIZE][METACACHE];
     __shared__ float output[OUTSIZE];
     
-    if (blockIdx.x == 0) { //NYI
+    if (blockIdx.x == 0) { 
 
         __shared__ int isDone;  //Tracks how many blocks we have loaded.
         __shared__ metaEntry_t *metaHeap;
+        int nextBlock;
 
         if (threadIdx.x == 0){
             metaHeap = (metaEntry_t *)heap; //reuse the "heap" declaration.
@@ -229,23 +233,21 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
             __threadfence_block();
         }
 
-        int nextBlock;
-
         //Initialize datastructures
         initMetaHeap(metaHeap, buffer);
         __syncthreads();
 
         //First warp maintains metaheap.
         if (threadIdx.x < 31){
-
-            
-
+            cuPrintf("topheapsize is %d\n", topHeapSize); 
+            metaHeapify(metaHeap, buffer, topHeapSize);
+            cuPrintf("warp 0 says that the value of isDone is %d\n", isDone);
         }
         //Laters warps maintain buffers.
         //REMOVE IF PART OF THE CLAUSE ONCE YOU ARE DONE DEBUGGING!
         else {
             nextBlock = (threadIdx.x>>5) -1; //floor(threadIdx/32) -1.
-            while (isDone < 1) {
+            while (isDone < numBlocks) {
                 fillBuffer(&midList[nextBlock*BLOCKSIZE],
                            &blockInfo[nextBlock], buffer[nextBlock],
                            threadIdx.x & ~31, &isDone);
@@ -255,7 +257,6 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
                 }
             }
         }
-
     }
     else {
         __shared__ blockInfo_t curBlockInfo;
@@ -316,7 +317,7 @@ __global__ void GPUHeapSort(float *d_list, float *midList, float *sortedList,
                 __syncthreads();
                 //cuPrintf("Calling writeBlock with popcount %d\n", popCount);
                 
-                writeBlock(d_list, output, popCount,
+                writeBlock(midList, output, popCount,
                            &blockInfo[curBlockInfo.index], &curBlockInfo);
                 __syncthreads();
                 //cuPrintf("At end, remaining:  %d\n", curBlockInfo.remaining);
@@ -374,7 +375,7 @@ __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
     //The first three threads perform slow memory operations.  The fourth
     //does some processing while the others are waiting for memory.
     if(threadIdx.x == firstThread) {
-        isReady = blockInfo->size;
+        isReady = blockInfo->writeLoc;
     }
     if (threadIdx.x == firstThread+1){
         readLoc = blockInfo->readLoc;
@@ -394,19 +395,28 @@ __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
 
     //Block isn't ready.  Do nothing.
     if (isReady == 0){
-        cuPrintf("Not ready yet!\n");
+        //cuPrintf("Not ready yet!\n");
         return;
     }
     else {
-        cuPrintf("Totally ready!\n");
+        //cuPrintf("Totally ready!\n");
         //For threads firstThread through METACACHE...
         index = threadIdx.x - firstThread;
+        //cuPrintf("index is %d\n", index);
         if (index < METACACHE){
+            cuPrintf("index is ready!\n");
+            //Note that the following three lines risk a race w/warp 0.  Alas, 
+            //atomic TAS on shared is not implemented in compute capacity 1.1, so this is
+            //more-or-less unavoidable.  We need to atomically test the buffer for 
+            //INVALID state and then write to it to avoid the race condition.  If this
+            //were going to be run on something of compute capacity 1.2 or greater, 
+            //an atomic TAS would be used and all would be well.
             //Do we have an invalid cache entry?
             if (buffer[index] == INVALID) {
                 //Does g_block have an element that can fill our invalid entry?
-                if (readLoc + index < writeLoc){
+                if (readLoc + index < writeLoc){                     
                     buffer[index] = g_block[readLoc+index];
+                    //cuPrintf("filled buffer %d with %f\n", index, buffer[index]);
                 }
             }
         }
@@ -424,10 +434,13 @@ __device__ void fillBuffer(float *g_block, blockInfo_t *blockInfo,
         atomicSub(&blockInfo->bufSize, toCacheCount);  
     }
     if (threadIdx.x == firstThread + 1){
+        cuPrintf("ended up caching %d elements\n", toCacheCount);
         blockInfo->readLoc = readLoc + toCacheCount;
     }
     if (threadIdx.x == firstThread + 2){
-        *isDone = *isDone + 1;
+        if (toCacheCount > 0){
+            *isDone = *isDone + 1;
+        }
     }
     return;
 }
@@ -441,8 +454,8 @@ __device__ void writeBlock(float *g_block, float *s_block, int writeLen,
     //cuPrintf("beginning writeBlock\n");
     for(int i = threadIdx.x; i < writeLen; i += blockDim.x){
         g_block[s_info->writeLoc+i] = s_block[i];
-        //cuPrintf("writing block %d to %d with value %f\n",
-        //         i, s_info->writeLoc + i, g_block[s_info->writeLoc + i]);
+        cuPrintf("writing block %d to %d with value %f\n",
+                 i, s_info->writeLoc + i, g_block[s_info->writeLoc + i]);
     }
     __syncthreads();
     //Update the blockInfo struct in global memory
@@ -599,15 +612,16 @@ __device__ void heapify(__volatile__ float *inList, int len){
  * thread.  If this function is not executed by all of threads 0-7, the GPU
  * will stall.
  */
-__device__ void metaHeapify(__volatile__ float *inList,
-                            float *buf[METASIZE][METACACHE], int len){
+__device__ void metaHeapify(__volatile__ metaEntry_t *inList,
+                            __volatile__ float buf[METASIZE][METACACHE], int len){
     
     int focusIdx = 0; //Index of element currently being heapified
-    float focus=0, parent=0; //current element being heapified and its parent
+    __volatile__ metaEntry_t focus, parent; //current element being heapified and its parent
     __volatile__ __shared__ int temp;
     /*int localTemp=0; Temp doesn't need to be re-read _every_ time.
                     * Temp will be used to track the next element to percolate.
                     */
+    int i;
 
     if (threadIdx.x == 0){
         temp = 0; //Index of next element to heapify
@@ -621,7 +635,13 @@ __device__ void metaHeapify(__volatile__ float *inList,
     while (temp < len){
         if (threadIdx.x == (temp & 7)){
             focusIdx = temp;
-            focus = inList[focusIdx];
+            focus.key = inList[focusIdx].key;
+            focus.value = inList[focusIdx].value;
+            //Initialize the inList entry
+            do {
+                inList[focusIdx].value = buf[focus.key][0];
+                focus.value = inList[focusIdx].value; 
+            } while (focus.value == INVALID);
             temp = temp + 1;
             //cuPrintf("Focusing on element %d with value %f\n",
             //         focusIdx, focus);
@@ -630,12 +650,15 @@ __device__ void metaHeapify(__volatile__ float *inList,
         //Unrolled loop once to avoid race conditions and get a small speed
         //boost over using a for loop on 2 iterations.
         if (focusIdx != 0){
-            parent = inList[(focusIdx-1)>>1];
+            parent.key = inList[(focusIdx-1)>>1].key;
+            parent.value = inList[(focusIdx-1)>>1].value;
             //Swap focus and parent if focus is bigger than parent
-            if (focus > parent){
+            if (focus.value > parent.value){
                 //cuPrintf("Focus %f > parent %f\n", focus, parent); 
-                inList[focusIdx] = parent;
-                inList[(focusIdx-1)>>1] = focus;
+                inList[focusIdx].key = parent.key;
+                inList[focusIdx].value = parent.value;
+                inList[(focusIdx-1)>>1].key = focus.key;
+                inList[(focusIdx-1)>>1].value = focus.value;
                 focusIdx = (focusIdx - 1)>>1;
             }
             else {
@@ -644,12 +667,15 @@ __device__ void metaHeapify(__volatile__ float *inList,
             }
         }
         if (focusIdx != 0){
-            parent = inList[(focusIdx-1)>>1];
+            parent.key = inList[(focusIdx-1)>>1].key;
+            parent.value = inList[(focusIdx-1)>>1].value;
             //Swap focus and parent if focus is bigger than parent
-            if (focus > parent){
-                //cuPrintf("Focus %f > parent %f\n", focus, parent); 
-                inList[focusIdx] = parent;
-                inList[(focusIdx-1)>>1] = focus;
+            if (focus.value > parent.value){
+                //cuPrintf("Focus %f > parent %f\n", focus, parent);
+                inList[focusIdx].key = parent.key;
+                inList[focusIdx].value = parent.value; 
+                inList[(focusIdx-1)>>1].key = focus.key;
+                inList[(focusIdx-1)>>1].value = focus.value;
                 focusIdx = (focusIdx-1)>>1;
             }
             else {
@@ -662,12 +688,15 @@ __device__ void metaHeapify(__volatile__ float *inList,
     
     //Empty the pipeline before returning
     while (focusIdx !=0){
-        parent = inList[(focusIdx-1)>>1];
+        parent.key = inList[(focusIdx-1)>>1].key;
+        parent.value = inList[(focusIdx-1)>>1].value;
         //Swap focus and parent if focus is bigger than parent
-        if (focus > parent){
-            cuPrintf("Focus %f > parent %f\n", focus, parent); 
-            inList[focusIdx] = parent;
-            inList[(focusIdx-1)>>1] = focus;
+        if (focus.value > parent.value){
+            cuPrintf("Focus %f > parent %f\n", focus.value, parent.value);
+            inList[focusIdx].key = parent.key;
+            inList[focusIdx].value = parent.value;  
+            inList[(focusIdx-1)>>1].key = focus.key;
+            inList[(focusIdx-1)>>1].value = focus.value;
             focusIdx = (focusIdx-1)>>1;
         }
         else {
