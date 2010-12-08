@@ -10,7 +10,7 @@
 
 //These Inline Functions are used in the CPU Quicksort Implementation
 #define swap(A,B) { float temp = A; A = B; B = temp;}
-#define compswap(A,B) if(B < A) swap(A,B)
+//#define compswap(A,B) if(B < A) swap(A,B)
 
 //These Data Structs are used in the GPU Quicksort Implementation
 typedef enum compstatus{
@@ -72,7 +72,7 @@ void csort(float ls[], int l, int r){
   swap(ls[i],ls[r]);
   j = i-1;
   i++;
-  for(k = 1; k < p; k++,j--)
+  for(k = l; k < p; k++,j--)
     swap(ls[k],ls[j]);
   for(k = r-1; k > q; k--,i++)
     swap(ls[k], ls[i]);
@@ -97,7 +97,8 @@ void csort(float ls[], int l, int r){
  */
 double cpu_quicksort(float unsorted[], int length, float sorted[]){
 
-  memcpy(sorted, unsorted, length);
+  for(int i = 0; i < length; i++)
+    sorted[i] = unsorted[i];
 
   clock_t start, end;
   double time;
@@ -209,7 +210,7 @@ void gqSort(data * ls, int l, int r, int length){
     int numBlocks = ceil((l - r - 1) / THREADS_PER_BLOCK);
     data * d_ls;
     data * d_ls2;
-    vars * endpts;
+    vars * endpts = (vars *) malloc(sizeof(vars));
 
     vars * d_endpts;
     int d_leq[numBlocks];
@@ -294,9 +295,13 @@ void quicksort(float unsorted[], int length, Result * result){
 
   //check that sorted[0] = sorted[1];
   int n = 0;
-  for(int i = 0; i < length; i++)
+  for(int i = 0; i < length; i++){
     if(sorted[0][i] != sorted[1][i])
       n++;
+    printf("CPU #%d: %f\t", i, sorted[0][i]); 
+    printf("GPU #%d: %f", i, sorted[1][i]); 
+    printf("\n", i, sorted[0][i); 
+  }
   if(n!= 0){
     fprintf(stdout, "There were %d discrepencies between the CPU and GPU QuickSort algorithms\n", n);
   }
