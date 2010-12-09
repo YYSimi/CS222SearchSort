@@ -58,7 +58,8 @@ int main(int argc, char ** argv){
   }
 
   for(i = 0; i < data->nlists; i++){
-    quicksort(data->fp_arr[i], data->length[i], &(results->rlist[0][i]));
+    //quicksort(data->fp_arr[i], data->length[i], &(results->rlist[0][i]));
+    radixsort(data->fp_arr[i], data->length[i], &(results->rlist[1][i]));
     /* Execute the sorting algorithms here, each one on data->fp_arr[i] */
   }
 

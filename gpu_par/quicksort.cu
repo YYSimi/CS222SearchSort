@@ -4,7 +4,7 @@
 #include "common/io.h"
 #include <time.h>
 #include <cuda.h>
-#include "common/cuPrintf.cu"
+//#include "common/cuPrintf.cu"
 
 /*********************** Data Definitions ********************************/
 #define THREADS_PER_BLOCK 128
