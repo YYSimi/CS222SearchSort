@@ -7,7 +7,7 @@
 #include "common/cuPrintf.cu"
 
 /*********************** Data Definitions ********************************/
-#define THREADS_PER_BLOCK 128
+#define THREADS_PER_BLOCK 256
 
 //These Inline Functions are used in the CPU Quicksort Implementation
 #define swap(A,B) { float temp = A; A = B; B = temp;}
@@ -128,40 +128,64 @@ double cpu_quicksort(float unsorted[], int length, float sorted[]){
  *
  */
 __global__ void gpuPartitionSwap(float * input, float * output, vars * endpts, 
-				 float pivot, int l, int r, int d_leq[], 
-				 int d_gt[], int nBlocks)
+				 float pivot, int l, int r, 
+                                 int d_leq[], 
+				 int d_gt[], int *d_leq_val, int *d_gt_val, 
+                                 int nBlocks)
 {
   //copy a section of the input into shared memory
   __shared__ float bInput[THREADS_PER_BLOCK];
   __syncthreads();
   int idx = l + blockIdx.x*THREADS_PER_BLOCK + threadIdx.x;
+  __shared__ int lThisBlock, rThisBlock;
+  __shared__ int lOffset, rOffset;
 
   if(threadIdx.x == 0){
     d_leq[blockIdx.x] = 0;
     d_gt[blockIdx.x] = 0;
+    *d_leq_val = 0;
+    *d_gt_val = 0;
+    //cuPrintf("STARTING NEXT SET!  l: %d, r: %d\n", l, r);
   }
   __syncthreads();
 
   if(idx <= (r - 1)){
     bInput[threadIdx.x] = input[idx];
+    //cuPrintf("read %f at input [%d]\n", bInput[threadIdx.x], idx);
 
     //make comparison against the pivot, setting 'status' and updating the counter (if necessary)
     if( bInput[threadIdx.x] <= pivot ){
-      atomicAdd( &(d_leq[blockIdx.x]), 1);
+        //cuPrintf("input:  %f < pivot: %f\n", bInput[threadIdx.x], pivot);
+        atomicAdd( &(d_leq[blockIdx.x]), 1);
     } else {
-      atomicAdd( &(d_gt[blockIdx.x]), 1);
+        //cuPrintf("input:  %f > pivot: %f\n", bInput[threadIdx.x], pivot);
+        atomicAdd( &(d_gt[blockIdx.x]), 1);
     }
     
   }
   __syncthreads();
 
+
+  if (threadIdx.x == 0){
+      lThisBlock = d_leq[blockIdx.x];
+      lOffset = l+atomicAdd(d_leq_val, lThisBlock);
+  }
+  if (threadIdx.x == 1){
+      rThisBlock = d_gt[blockIdx.x];
+      rOffset = r-atomicAdd(d_gt_val, rThisBlock);
+  }
+
+  __syncthreads();
+
   if(threadIdx.x == 0){
-    int lOffset = l;
-    int rOffset = r;
+      //cuPrintf("lThisBlock, rThisBlock: %d, %d\n", lThisBlock, rThisBlock);
+    //cuPrintf("lOffset: %d, rOffset: %d\n", lOffset, rOffset);
+    /*
     for(int i = 1; i <= blockIdx.x; i++){
       lOffset += d_leq[i - 1];
       rOffset -= d_gt[i - 1];
-    }
+      }
+*/
 
     int m = 0;
     int n = 0;
@@ -169,9 +193,13 @@ __global__ void gpuPartitionSwap(float * input, float * output, vars * endpts,
       int chk = l + blockIdx.x*THREADS_PER_BLOCK + j;
       if(chk <= (r-1) ){
 	if(bInput[j] <= pivot){
+            //cuPrintf("writing testval %f to loutput[%d = %d + %d]\n",
+            //     bInput[j], lOffset+m, lOffset, m);
 	  output[lOffset + m] = bInput[j];
 	  ++m;
 	} else {
+            //cuPrintf("writing testval %f to routput[%d = %d - %d]\n", 
+            //      bInput[j], rOffset-n, rOffset, n);
 	  output[rOffset - n] = bInput[j];
 	  ++n;
 	}
@@ -187,6 +215,7 @@ __global__ void gpuPartitionSwap(float * input, float * output, vars * endpts,
       pOffset += d_leq[k];
 
     output[pOffset] = pivot;
+    //cuPrintf("writing pivot %f to output[%d]\n", pivot, pOffset);
     endpts->l = (pOffset - 1);
     endpts->r = (pOffset + 1);
   }
@@ -197,6 +226,15 @@ __global__ void gpuPartitionSwap(float * input, float * output, vars * endpts,
 void gqSort(float ls[], int l, int r, int length){
   //if (r - l) >= 1
   if((r - l) >= 1){
+
+    //0.  print list
+    /*printf("List is: ");
+    for (int temp = 0; temp < length; temp++){
+      printf("%f ", ls[temp]);
+    }
+    printf("\n");
+    */
+
     //1. grab pivot
     float pivot = ls[r];
 
@@ -212,37 +250,40 @@ void gqSort(float ls[], int l, int r, int length){
     endpts.r = r;
 
     vars * d_endpts;
-    int * d_leq, * d_gt;
+    int * d_leq, * d_gt, *d_leq_val, *d_gt_val;
     int size = sizeof(float);
     cudaMalloc(&(d_ls), size*length);
     cudaMalloc(&(d_ls2), size*length);
     cudaMalloc(&(d_endpts), sizeof(vars));
     cudaMalloc(&(d_leq), 4*numBlocks);
     cudaMalloc(&(d_gt), 4*numBlocks);
+    cudaMalloc(&d_leq_val, 4);
+    cudaMalloc(&d_gt_val, 4);
     cudaMemcpy(d_ls, ls, size*length, cudaMemcpyHostToDevice);
     cudaMemcpy(d_ls2, ls, size*length, cudaMemcpyHostToDevice);
 
     //3. call gpuPartition function
-    gpuPartitionSwap<<<numBlocks, THREADS_PER_BLOCK>>>(d_ls, d_ls2, d_endpts, pivot, l, r, d_leq, d_gt, numBlocks);
+    gpuPartitionSwap<<<numBlocks, THREADS_PER_BLOCK>>>(d_ls, d_ls2, d_endpts, pivot, l, r, d_leq, d_gt, d_leq_val, d_gt_val, numBlocks);
 
     //4. Retrieve sorted list and other variables
     cudaMemcpy(ls, d_ls2, size*length, cudaMemcpyDeviceToHost);
     cudaMemcpy(&(endpts), d_endpts, sizeof(vars), cudaMemcpyDeviceToHost);
 
     cudaThreadSynchronize();
-    cudaPrintfDisplay(stdout,true);
+    //cudaPrintfDisplay(stdout,true);
     //5.recursively call on left/right sections of list generated by gpuPartition
 
-    if(endpts.l >= l)
-      gqSort(ls, l, endpts.l, length);
-    if(endpts.r <= r)
-      gqSort(ls, endpts.r, r, length);
-   
     cudaFree(d_ls);
     cudaFree(d_ls2);
     cudaFree(d_endpts);
     cudaFree(d_leq);
     cudaFree(d_gt);
+
+    if(endpts.l >= l)
+      gqSort(ls, l, endpts.l, length);
+    if(endpts.r <= r)
+      gqSort(ls, endpts.r, r, length);
+  
   }
 
   return;
@@ -310,9 +351,9 @@ void quicksort(float unsorted[], int length, Result * result){
   for(int i = 0; i < length; i++){
     if(sorted[0][i] != sorted[1][i])
       n++;
-    //    printf("CPU #%d: %f\t", i, sorted[0][i]); 
-    //    printf("GPU #%d: %f", i, sorted[1][i]); 
-    //    printf("\n", i, sorted[0][i]); 
+    //      printf("CPU #%d: %f\t", i, sorted[0][i]); 
+    //printf("GPU #%d: %f", i, sorted[1][i]); 
+    //printf("\n", i, sorted[0][i]); 
 
   }
 
@@ -323,6 +364,6 @@ void quicksort(float unsorted[], int length, Result * result){
   if(n != 0){
     fprintf(stdout, "There were %d discrepencies between the CPU and GPU QuickSort algorithms\n", n);
   }
-
+  printf("CPU Time: %f, GPU time: %f\n", result->cpu_time, result->gpu_time);
   return;
 }
